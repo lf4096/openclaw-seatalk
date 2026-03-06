@@ -1,0 +1,9 @@
+{
+	"id": "seatalk",
+	"channels": ["seatalk"],
+	"configSchema": {
+		"type": "object",
+		"additionalProperties": false,
+		"properties": {}
+	}
+}

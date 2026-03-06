@@ -1,0 +1,54 @@
+{
+	"name": "openclaw-seatalk",
+	"version": "0.1.0",
+	"description": "OpenClaw SeaTalk channel plugin",
+	"type": "module",
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lf4096/openclaw-seatalk.git"
+	},
+	"homepage": "https://github.com/lf4096/openclaw-seatalk#readme",
+	"bugs": "https://github.com/lf4096/openclaw-seatalk/issues",
+	"keywords": ["openclaw", "seatalk", "chatbot", "channel-plugin"],
+	"engines": {
+		"node": ">=18.0.0"
+	},
+	"files": [
+		"index.ts",
+		"src/",
+		"openclaw.plugin.json"
+	],
+	"scripts": {
+		"format": "biome format --write .",
+		"format:check": "biome format .",
+		"lint": "biome lint .",
+		"lint:fix": "biome lint --fix .",
+		"check": "biome check .",
+		"check:fix": "biome check --fix ."
+	},
+	"dependencies": {
+		"@sinclair/typebox": "0.34.48",
+		"ws": "^8.18.0",
+		"zod": "^4.3.6"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.0",
+		"@types/ws": "^8.5.0",
+		"openclaw": "latest"
+	},
+	"pnpm": {
+		"onlyBuiltDependencies": ["@biomejs/biome"]
+	},
+	"openclaw": {
+		"extensions": ["./index.ts"],
+		"channel": {
+			"id": "seatalk",
+			"label": "SeaTalk",
+			"selectionLabel": "SeaTalk (plugin)",
+			"blurb": "SeaTalk messaging integration",
+			"order": 70,
+			"quickstartAllowFrom": true
+		}
+	}
+}

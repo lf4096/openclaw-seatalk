@@ -94,7 +94,7 @@ SeaTalk --HTTP POST-> OpenClaw (webhook server)
 
 ### Relay Mode (recommended for multiple apps)
 
-The plugin connects to a [seatalk-relay](https://github.com/lf4096/openclaw-seatalk/tree/main/seatalk-relay) service as a WebSocket client. The relay service receives webhooks from SeaTalk and forwards events to the plugin. Suitable when OpenClaw runs behind a firewall or NAT without a public address.
+The plugin connects to a [seatalk-relay](https://github.com/lf4096/seatalk-relay) service as a WebSocket client. The relay service receives webhooks from SeaTalk and forwards events to the plugin. Suitable when OpenClaw runs behind a firewall or NAT without a public address.
 
 ```
 SeaTalk API --HTTP POST-> seatalk-relay <-WebSocket-- OpenClaw (relay mode)

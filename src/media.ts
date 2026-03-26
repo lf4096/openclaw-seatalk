@@ -46,6 +46,14 @@ export async function resolveInboundMedia(params: {
 
 	if (!url) return null;
 
+	let mediaUrlHost: string;
+	try {
+		mediaUrlHost = new URL(url).hostname;
+	} catch {
+		mediaUrlHost = "<invalid-url>";
+	}
+	log?.(`seatalk: inbound ${message.tag} media url host=${mediaUrlHost}`);
+
 	const MAX_RETRY = 1;
 
 	for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {

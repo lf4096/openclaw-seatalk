@@ -1,5 +1,5 @@
 import type { ChannelMeta, ChannelPlugin, ClawdbotConfig } from "openclaw/plugin-sdk";
-import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk";
+import { DEFAULT_ACCOUNT_ID, PAIRING_APPROVED_MESSAGE } from "openclaw/plugin-sdk";
 import {
 	listSeaTalkAccountIds,
 	resolveDefaultSeaTalkAccountId,
@@ -9,6 +9,7 @@ import { resolveSeaTalkClient } from "./client.js";
 import { seatalkOnboardingAdapter } from "./onboarding.js";
 import { seatalkOutbound } from "./outbound.js";
 import { probeSeaTalk } from "./probe.js";
+import { sendTextMessage } from "./send.js";
 import { looksLikeEmail, looksLikeSeaTalkId, normalizeSeaTalkTarget } from "./targets.js";
 import type { ResolvedSeaTalkAccount, SeaTalkConfig } from "./types.js";
 
@@ -26,6 +27,21 @@ const meta: ChannelMeta = {
 export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 	id: "seatalk",
 	meta,
+	pairing: {
+		idLabel: "employeeCode",
+		normalizeAllowEntry: (entry) =>
+			entry
+				.trim()
+				.replace(/^(seatalk|st):/i, "")
+				.trim(),
+		notifyApproval: async ({ cfg, id }) => {
+			const accountId = resolveDefaultSeaTalkAccountId(cfg);
+			const account = resolveSeaTalkAccount({ cfg, accountId });
+			const client = resolveSeaTalkClient(account);
+			if (!client) return;
+			await sendTextMessage(client, id, PAIRING_APPROVED_MESSAGE, 1);
+		},
+	},
 	capabilities: {
 		chatTypes: ["direct", "group"],
 		polls: false,
@@ -49,7 +65,7 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 				relayUrl: { type: "string" },
 				webhookPort: { type: "integer", minimum: 1 },
 				webhookPath: { type: "string" },
-				dmPolicy: { type: "string", enum: ["open", "allowlist"] },
+				dmPolicy: { type: "string", enum: ["open", "allowlist", "pairing"] },
 				allowFrom: { type: "array", items: { type: "string" } },
 				groupPolicy: { type: "string", enum: ["disabled", "allowlist", "open"] },
 				groupAllowFrom: { type: "array", items: { type: "string" } },
@@ -78,7 +94,7 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 							relayUrl: { type: "string" },
 							webhookPort: { type: "integer", minimum: 1 },
 							webhookPath: { type: "string" },
-							dmPolicy: { type: "string", enum: ["open", "allowlist"] },
+							dmPolicy: { type: "string", enum: ["open", "allowlist", "pairing"] },
 							allowFrom: { type: "array", items: { type: "string" } },
 							groupPolicy: {
 								type: "string",
@@ -183,7 +199,7 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 			const dmPolicy = seatalkCfg?.dmPolicy ?? "allowlist";
 			if (dmPolicy !== "open") return [];
 			return [
-				`- SeaTalk[${account.accountId}]: dmPolicy="open" allows any subscriber to message the bot. Set channels.seatalk.dmPolicy="allowlist" + channels.seatalk.allowFrom to restrict senders.`,
+				`- SeaTalk[${account.accountId}]: dmPolicy="open" allows any subscriber to message the bot. Set channels.seatalk.dmPolicy to "allowlist" or "pairing" (plus allowFrom / pairing approve) to restrict senders.`,
 			];
 		},
 	},

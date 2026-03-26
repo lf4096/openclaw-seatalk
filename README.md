@@ -27,7 +27,7 @@ OpenClaw channel plugin for [SeaTalk](https://seatalk.io/) messaging.
 - **Security** — SHA256 signature verification for all incoming events
 - **Token management** — automatic access token obtain, cache, and refresh
 - **Deduplication** — event ID dedup + per-sender debounce buffer (thread-aware)
-- **Access control** — DM policy (`open`/`allowlist`), group policy (`disabled`/`allowlist`/`open`), per-group and per-sender allow-lists
+- **Access control** — DM policy (`open`/`allowlist`/`pairing`), group policy (`disabled`/`allowlist`/`open`), per-group and per-sender allow-lists
 - **Email resolution** — email-to-employee_code lookup for outbound message targets
 - **Multi-account** — multiple SeaTalk bot apps in one OpenClaw instance
 - **Health probing** — connection health check on startup
@@ -131,7 +131,7 @@ Or edit the OpenClaw config file directly (`~/.openclaw/openclaw.json`).
       signingSecret: "your_signing_secret",
       webhookPort: 3210,
       webhookPath: "/callback",
-      dmPolicy: "open",  // or "allowlist"
+      dmPolicy: "open",  // or "allowlist" | "pairing"
       // allowFrom: ["e_12345678", "alice@company.com"],
     },
   },
@@ -179,7 +179,7 @@ Or edit the OpenClaw config file directly (`~/.openclaw/openclaw.json`).
 | `webhookPort` | number | `8080` | HTTP port (webhook mode only) |
 | `webhookPath` | string | `"/callback"` | HTTP path (webhook mode only) |
 | `relayUrl` | string | — | WebSocket URL (relay mode only) |
-| `dmPolicy` | `"open"` \| `"allowlist"` | `"allowlist"` | Who can DM the bot |
+| `dmPolicy` | `"open"` \| `"allowlist"` \| `"pairing"` | `"allowlist"` | Who can DM the bot (`pairing`: approve via `openclaw pairing approve seatalk <code>`; optional static `allowFrom` still applies) |
 | `allowFrom` | string[] | — | Allowed DM senders (employee codes or emails) |
 | `groupPolicy` | `"disabled"` \| `"allowlist"` \| `"open"` | `"disabled"` | Group chat policy |
 | `groupAllowFrom` | string[] | — | Allowed group IDs (when `groupPolicy: "allowlist"`) |
@@ -190,6 +190,8 @@ Or edit the OpenClaw config file directly (`~/.openclaw/openclaw.json`).
 | `tools.groupList` | boolean | `true` | Enable `seatalk` tool `group_list` action |
 | `tools.threadHistory` | boolean | `true` | Enable `seatalk` tool `thread_history` action |
 | `tools.getMessage` | boolean | `true` | Enable `seatalk` tool `get_message` action |
+
+**DM pairing (`dmPolicy: "pairing"`)** — Unknown senders get a one-time code in chat; run `openclaw pairing approve seatalk <code>` on the gateway host. Use `openclaw pairing list` / `pairing pending seatalk` to inspect requests. Multi-account: pass `--account <id>` on pairing commands. Optional `notifyApproval` uses the default SeaTalk account’s API client.
 
 Credentials can also be provided via environment variables:
 

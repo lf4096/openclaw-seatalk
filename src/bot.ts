@@ -1,4 +1,4 @@
-import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+import { type ClawdbotConfig, type RuntimeEnv, normalizeAccountId } from "openclaw/plugin-sdk";
 import { resolveSeaTalkAccount } from "./accounts.js";
 import type { SeaTalkClient } from "./client.js";
 import { buildSeaTalkMediaPayload, resolveInboundMedia } from "./media.js";
@@ -11,6 +11,106 @@ import type {
 	SeaTalkMessage,
 	SeaTalkMessageEvent,
 } from "./types.js";
+
+function isSeaTalkDmSenderAllowed(
+	employeeCode: string,
+	email: string | undefined,
+	allowFrom: string[],
+): boolean {
+	if (allowFrom.length === 0) return false;
+	return allowFrom.some((entry) => {
+		const e = entry.trim();
+		if (e === "*") return true;
+		if (e === employeeCode) return true;
+		if (email && e.toLowerCase() === email.toLowerCase()) return true;
+		return false;
+	});
+}
+
+/** Mirrors OpenClaw mergeDmAllowFromSources (pairing store is ignored when dmPolicy=allowlist). */
+function mergeDmAllowFromForSeatalk(params: {
+	allowFrom?: string[];
+	storeAllowFrom?: string[];
+	dmPolicy: string;
+}): string[] {
+	const storeEntries = params.dmPolicy === "allowlist" ? [] : (params.storeAllowFrom ?? []);
+	return [...(params.allowFrom ?? []), ...storeEntries]
+		.map((value) => String(value).trim())
+		.filter(Boolean);
+}
+
+function resolveSeaTalkDmAccess(params: {
+	dmPolicy: string;
+	configAllowFrom: string[];
+	storeAllowFrom: string[];
+	employeeCode: string;
+	email: string | undefined;
+}): { decision: "allow" | "block" | "pairing"; reason?: string } {
+	const effectiveAllowFrom = mergeDmAllowFromForSeatalk({
+		allowFrom: params.configAllowFrom,
+		storeAllowFrom: params.storeAllowFrom,
+		dmPolicy: params.dmPolicy,
+	});
+	const match = (list: string[]) =>
+		isSeaTalkDmSenderAllowed(params.employeeCode, params.email, list);
+
+	if (params.dmPolicy === "disabled") {
+		return { decision: "block", reason: "dmPolicy=disabled" };
+	}
+	if (params.dmPolicy === "open") {
+		return { decision: "allow" };
+	}
+	if (match(effectiveAllowFrom)) {
+		return { decision: "allow" };
+	}
+	if (params.dmPolicy === "pairing") {
+		return { decision: "pairing" };
+	}
+	return { decision: "block", reason: "not allowlisted" };
+}
+
+async function issueSeaTalkPairingChallenge(params: {
+	core: ReturnType<typeof getSeatalkRuntime>;
+	accountId: string;
+	employeeCode: string;
+	email: string | undefined;
+	client: SeaTalkClient;
+	threadId: string | undefined;
+	log: (msg: string) => void;
+}): Promise<void> {
+	const { code, created } = await params.core.channel.pairing.upsertPairingRequest({
+		channel: "seatalk",
+		accountId: normalizeAccountId(params.accountId),
+		id: params.employeeCode,
+		meta: params.email ? { email: params.email } : undefined,
+	});
+	if (!created) {
+		params.log(
+			`seatalk[${params.accountId}]: pairing already pending for ${params.employeeCode} (no duplicate code message; use openclaw pairing pending seatalk)`,
+		);
+		return;
+	}
+	const replyText = [
+		"OpenClaw: access not configured.",
+		"",
+		`Your SeaTalk employee code: ${params.employeeCode}`,
+		"",
+		`Pairing code: ${code}`,
+		"",
+		"Ask the bot owner to approve with:",
+		`openclaw pairing approve seatalk ${code}`,
+	].join("\n");
+	params.log(
+		`seatalk[${params.accountId}]: pairing request sender=${params.employeeCode} code=${code}`,
+	);
+	try {
+		await sendTextMessage(params.client, params.employeeCode, replyText, 1, params.threadId);
+	} catch (err) {
+		params.log(
+			`seatalk[${params.accountId}]: pairing reply failed for ${params.employeeCode}: ${String(err)}`,
+		);
+	}
+}
 
 export function dispatchSeaTalkEvent(params: {
 	cfg: ClawdbotConfig;
@@ -241,24 +341,49 @@ async function processBufferedEvents(
 	const seatalkCfg = account.config;
 
 	const dmPolicy = seatalkCfg?.dmPolicy ?? "allowlist";
-	const allowFrom = seatalkCfg?.allowFrom ?? [];
+	const configAllowFrom = (seatalkCfg?.allowFrom ?? []).map((v) => String(v));
 
-	if (dmPolicy === "allowlist") {
-		const allowed =
-			allowFrom.length === 0
-				? false
-				: allowFrom.some((entry) => {
-						const e = entry.trim();
-						if (e === "*") return true;
-						if (e === employeeCode) return true;
-						if (email && e.toLowerCase() === email.toLowerCase()) return true;
-						return false;
-					});
+	const core = getSeatalkRuntime();
+	const storeAllowFrom =
+		dmPolicy === "pairing"
+			? await core.channel.pairing
+					.readAllowFromStore({
+						channel: "seatalk",
+						accountId: normalizeAccountId(accountId),
+					})
+					.catch(() => [])
+			: [];
 
-		if (!allowed) {
+	const accessDecision = resolveSeaTalkDmAccess({
+		dmPolicy,
+		configAllowFrom,
+		storeAllowFrom,
+		employeeCode,
+		email,
+	});
+
+	if (accessDecision.decision === "pairing") {
+		await issueSeaTalkPairingChallenge({
+			core,
+			accountId,
+			employeeCode,
+			email,
+			client,
+			threadId: first.message.thread_id,
+			log,
+		});
+		return;
+	}
+
+	if (accessDecision.decision !== "allow") {
+		if (accessDecision.reason === "not allowlisted") {
 			log(`seatalk[${accountId}]: sender ${employeeCode} not in allowlist, dropping`);
-			return;
+		} else {
+			log(
+				`seatalk[${accountId}]: blocked DM from ${employeeCode} (${accessDecision.reason ?? "denied"})`,
+			);
 		}
+		return;
 	}
 
 	const mediaList: SeaTalkMediaInfo[] = [];
@@ -297,8 +422,6 @@ async function processBufferedEvents(
 	const threadId = first.message.thread_id;
 
 	try {
-		const core = getSeatalkRuntime();
-
 		const seatalkFrom = `seatalk:${employeeCode}`;
 		const seatalkTo = employeeCode;
 

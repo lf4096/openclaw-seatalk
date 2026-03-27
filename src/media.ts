@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import type { SeaTalkClient } from "./client.js";
+import { SEATALK_DEFAULT_MEDIA_DOWNLOAD_HOSTS, type SeaTalkClient } from "./client.js";
 import { readLocalMedia } from "./media-local.js";
 import { getSeatalkRuntime } from "./runtime.js";
 import type { SeaTalkMediaInfo, SeaTalkMessage, SeaTalkOutboundMedia } from "./types.js";
@@ -15,13 +15,49 @@ const MAX_OUTBOUND_RAW_BYTES = 3.75 * 1024 * 1024; // ~3.75MB raw → 5MB base64
 const SMALL_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
 const MAX_INBOUND_SAVE_BYTES = 250 * 1024 * 1024; // 250MB
 
+// #region Inbound media URL policy
+
+/** Build lowercase hostname allowlist; empty config falls back to SeaTalk OpenAPI host. */
+export function resolveMediaDownloadHostAllowlist(configured?: string[] | null): Set<string> {
+	const raw =
+		configured && configured.length > 0
+			? configured
+			: [...SEATALK_DEFAULT_MEDIA_DOWNLOAD_HOSTS];
+	return new Set(raw.map((h) => h.trim().toLowerCase()).filter(Boolean));
+}
+
+function gateInboundMediaUrl(
+	urlString: string,
+	allowedHosts: Set<string>,
+): { ok: true; hostname: string } | { ok: false; detail: string } {
+	let parsed: URL;
+	try {
+		parsed = new URL(urlString);
+	} catch {
+		return { ok: false, detail: "invalid URL" };
+	}
+	if (parsed.protocol !== "https:") {
+		return { ok: false, detail: `only https allowed (got ${parsed.protocol})` };
+	}
+	const hostname = parsed.hostname.toLowerCase();
+	if (!allowedHosts.has(hostname)) {
+		return { ok: false, detail: `host not in allowlist (${hostname})` };
+	}
+	return { ok: true, hostname };
+}
+
+// #endregion
+
 export async function resolveInboundMedia(params: {
 	message: SeaTalkMessage;
 	client: SeaTalkClient;
+	/** When set and non-empty, replaces default `openapi.seatalk.io`-only allowlist. */
+	mediaDownloadHosts?: string[] | null;
 	log?: (msg: string) => void;
 }): Promise<SeaTalkMediaInfo | null> {
-	const { message, client, log } = params;
+	const { message, client, log, mediaDownloadHosts } = params;
 	const core = getSeatalkRuntime();
+	const allowedHosts = resolveMediaDownloadHostAllowlist(mediaDownloadHosts);
 
 	let url: string | undefined;
 	let filename: string | undefined;
@@ -46,12 +82,12 @@ export async function resolveInboundMedia(params: {
 
 	if (!url) return null;
 
-	let mediaUrlHost: string;
-	try {
-		mediaUrlHost = new URL(url).hostname;
-	} catch {
-		mediaUrlHost = "<invalid-url>";
+	const gate = gateInboundMediaUrl(url, allowedHosts);
+	if (!gate.ok) {
+		log?.(`seatalk: rejected inbound ${message.tag} media before download: ${gate.detail}`);
+		return null;
 	}
+	const mediaUrlHost = gate.hostname;
 	log?.(`seatalk: inbound ${message.tag} media url host=${mediaUrlHost}`);
 
 	const MAX_RETRY = 1;
@@ -65,12 +101,15 @@ export async function resolveInboundMedia(params: {
 				(!contentType || contentType === "application/octet-stream") &&
 				result.buffer.length < SMALL_FILE_THRESHOLD
 			) {
-				contentType = await core.media.detectMime({ buffer: result.buffer });
+				const detected = await core.media.detectMime({ buffer: result.buffer });
+				if (detected) {
+					contentType = detected;
+				}
 			}
 
 			const saved = await core.channel.media.saveMediaBuffer(
 				result.buffer,
-				contentType,
+				contentType ?? "application/octet-stream",
 				"inbound",
 				MAX_INBOUND_SAVE_BYTES,
 				filename,

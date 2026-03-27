@@ -1,18 +1,18 @@
-import type { ChannelMeta, ChannelPlugin, ClawdbotConfig } from "openclaw/plugin-sdk";
-import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk";
+import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk";
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/core";
 import {
 	listSeaTalkAccountIds,
 	resolveDefaultSeaTalkAccountId,
 	resolveSeaTalkAccount,
 } from "./accounts.js";
 import { resolveSeaTalkClient } from "./client.js";
-import { seatalkOnboardingAdapter } from "./onboarding.js";
 import { seatalkOutbound } from "./outbound.js";
 import { probeSeaTalk } from "./probe.js";
+import { seatalkSetupWizard } from "./setup-surface.js";
 import { looksLikeEmail, looksLikeSeaTalkId, normalizeSeaTalkTarget } from "./targets.js";
 import type { ResolvedSeaTalkAccount, SeaTalkConfig } from "./types.js";
 
-const meta: ChannelMeta = {
+const meta = {
 	id: "seatalk",
 	label: "SeaTalk",
 	selectionLabel: "SeaTalk (plugin)",
@@ -135,7 +135,7 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 			const isDefault = accountId === DEFAULT_ACCOUNT_ID;
 
 			if (isDefault) {
-				const next = { ...cfg } as ClawdbotConfig;
+				const next = { ...cfg } as OpenClawConfig;
 				const nextChannels = { ...cfg.channels } as Record<string, unknown>;
 				nextChannels.seatalk = undefined;
 				const hasOtherChannels = Object.values(nextChannels).some((v) => v !== undefined);
@@ -224,7 +224,7 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 			};
 		},
 	},
-	onboarding: seatalkOnboardingAdapter,
+	setupWizard: seatalkSetupWizard,
 	messaging: {
 		normalizeTarget: (raw) => normalizeSeaTalkTarget(raw) ?? undefined,
 		targetResolver: {

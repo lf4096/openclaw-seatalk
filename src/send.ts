@@ -1,6 +1,5 @@
-import type { ClawdbotConfig } from "openclaw/plugin-sdk";
-import { resolveSeaTalkAccount } from "./accounts.js";
-import { type SeaTalkClient, resolveSeaTalkClient } from "./client.js";
+import type { SeaTalkClient } from "./client.js";
+import { prepareOutboundMedia } from "./media.js";
 
 export async function sendTextMessage(
 	client: SeaTalkClient,
@@ -53,19 +52,39 @@ export async function sendGroupTextMessage(
 	await client.sendGroupChat(groupId, { tag: "text", text: { format, content: text } }, threadId);
 }
 
-export async function sendSeaTalkMessage(params: {
-	cfg: ClawdbotConfig;
+export async function sendMediaToTarget(params: {
+	client: SeaTalkClient;
 	to: string;
-	text: string;
-	accountId?: string;
-}): Promise<{ messageId?: string; chatId?: string }> {
-	const { cfg, to, text, accountId } = params;
-	const account = resolveSeaTalkAccount({ cfg, accountId });
-	const client = resolveSeaTalkClient(account);
-	if (!client) {
-		throw new Error(`SeaTalk client not available for account ${account.accountId}`);
-	}
+	mediaUrl: string;
+	threadId?: string;
+	isGroup: boolean;
+}): Promise<void> {
+	const { client, to, mediaUrl, threadId, isGroup } = params;
+	const media = await prepareOutboundMedia(mediaUrl);
+	if (!media) return;
 
-	await sendTextMessage(client, to, text, 1);
-	return { chatId: to };
+	if (isGroup) {
+		if (media.sendAs === "image") {
+			await client.sendGroupChat(
+				to,
+				{ tag: "image", image: { content: media.base64 } },
+				threadId,
+			);
+		} else {
+			await client.sendGroupChat(
+				to,
+				{
+					tag: "file",
+					file: { content: media.base64, filename: media.filename || "file" },
+				},
+				threadId,
+			);
+		}
+	} else {
+		if (media.sendAs === "image") {
+			await sendImageMessage(client, to, media.base64, threadId);
+		} else {
+			await sendFileMessage(client, to, media.base64, media.filename || "file", threadId);
+		}
+	}
 }

@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { listEnabledSeaTalkAccounts } from "./accounts.js";
+import { listEnabledSeaTalkAccounts, resolveSeaTalkAccount } from "./accounts.js";
 import type { SeaTalkClient } from "./client.js";
 import { resolveSeaTalkClient } from "./client.js";
 import { type SeaTalkToolParams, SeaTalkToolSchema } from "./tool-schema.js";
@@ -68,8 +68,8 @@ export function registerSeaTalkTool(api: OpenClawPluginApi) {
 		return;
 	}
 
-	const firstAccount = accounts[0];
-	const toolsCfg = resolveToolsConfig(firstAccount.tools);
+	const defaultAccount = accounts[0];
+	const toolsCfg = resolveToolsConfig(defaultAccount.tools);
 
 	const anyEnabled =
 		toolsCfg.groupInfo ||
@@ -82,96 +82,108 @@ export function registerSeaTalkTool(api: OpenClawPluginApi) {
 		return;
 	}
 
-	const getClient = () => resolveSeaTalkClient(firstAccount);
 	const log = (msg: string) => api.logger.warn?.(msg);
 
 	api.registerTool(
-		{
-			name: "seatalk",
-			label: "SeaTalk",
-			description:
-				"SeaTalk operations. Actions: group_history (group chat messages, chronological order), group_info (group details), group_list (joined groups), thread_history (thread messages, chronological order), get_message (retrieve a single message by ID). History and thread results include resolved quoted_message for messages that quote another message.",
-			parameters: SeaTalkToolSchema,
-			async execute(_toolCallId, params) {
-				const p = params as SeaTalkToolParams;
-				try {
-					const client = getClient();
-					if (!client) {
-						return json({ error: "SeaTalk client not available" });
-					}
+		(ctx) => {
+			const accountId = ctx.agentAccountId;
+			const getClient = (): SeaTalkClient | null => {
+				if (accountId) {
+					const account = resolveSeaTalkAccount({ cfg: api.config!, accountId });
+					if (account.configured) return resolveSeaTalkClient(account);
+				}
+				return resolveSeaTalkClient(defaultAccount);
+			};
 
-					switch (p.action) {
-						case "group_history": {
-							if (!toolsCfg.groupHistory) {
-								return json({ error: "groupHistory is disabled in config" });
-							}
-							const data = await client.getGroupChatHistory(p.group_id, {
-								pageSize: p.page_size,
-								cursor: p.cursor,
+			return {
+				name: "seatalk",
+				label: "SeaTalk",
+				description:
+					"SeaTalk operations. Actions: group_history (group chat messages, chronological order), group_info (group details), group_list (joined groups), thread_history (thread messages, chronological order), get_message (retrieve a single message by ID). History and thread results include resolved quoted_message for messages that quote another message.",
+				parameters: SeaTalkToolSchema,
+				async execute(_toolCallId, params) {
+					const p = params as SeaTalkToolParams;
+					try {
+						const client = getClient();
+						if (!client) {
+							return json({
+								error: `SeaTalk client not available${accountId ? ` for account ${accountId}` : ""}`,
 							});
-							const msgs = reverseMessageArray(data, "group_chat_messages");
-							await resolveQuotedMessages(client, msgs, log);
-							return json(data);
 						}
-						case "group_info": {
-							if (!toolsCfg.groupInfo) {
-								return json({ error: "groupInfo is disabled in config" });
-							}
-							return json(await client.getGroupChatInfo(p.group_id));
-						}
-						case "group_list": {
-							if (!toolsCfg.groupList) {
-								return json({ error: "groupList is disabled in config" });
-							}
-							return json(
-								await client.getJoinedGroupChats({
-									pageSize: p.page_size,
-									cursor: p.cursor,
-								}),
-							);
-						}
-						case "thread_history": {
-							if (!toolsCfg.threadHistory) {
-								return json({ error: "threadHistory is disabled in config" });
-							}
-							let data: Record<string, unknown>;
-							if (p.group_id) {
-								data = await client.getGroupThread(p.group_id, p.thread_id, {
+
+						switch (p.action) {
+							case "group_history": {
+								if (!toolsCfg.groupHistory) {
+									return json({ error: "groupHistory is disabled in config" });
+								}
+								const data = await client.getGroupChatHistory(p.group_id, {
 									pageSize: p.page_size,
 									cursor: p.cursor,
 								});
-							} else {
-								if (!p.employee_code) {
-									return json({
-										error: "employee_code is required for DM thread (when group_id is absent)",
+								const msgs = reverseMessageArray(data, "group_chat_messages");
+								await resolveQuotedMessages(client, msgs, log);
+								return json(data);
+							}
+							case "group_info": {
+								if (!toolsCfg.groupInfo) {
+									return json({ error: "groupInfo is disabled in config" });
+								}
+								return json(await client.getGroupChatInfo(p.group_id));
+							}
+							case "group_list": {
+								if (!toolsCfg.groupList) {
+									return json({ error: "groupList is disabled in config" });
+								}
+								return json(
+									await client.getJoinedGroupChats({
+										pageSize: p.page_size,
+										cursor: p.cursor,
+									}),
+								);
+							}
+							case "thread_history": {
+								if (!toolsCfg.threadHistory) {
+									return json({ error: "threadHistory is disabled in config" });
+								}
+								let data: Record<string, unknown>;
+								if (p.group_id) {
+									data = await client.getGroupThread(p.group_id, p.thread_id, {
+										pageSize: p.page_size,
+										cursor: p.cursor,
+									});
+								} else {
+									if (!p.employee_code) {
+										return json({
+											error: "employee_code is required for DM thread (when group_id is absent)",
+										});
+									}
+									data = await client.getDmThread(p.employee_code, p.thread_id, {
+										pageSize: p.page_size,
+										cursor: p.cursor,
 									});
 								}
-								data = await client.getDmThread(p.employee_code, p.thread_id, {
-									pageSize: p.page_size,
-									cursor: p.cursor,
+								const msgs = reverseMessageArray(data, "thread_messages");
+								await resolveQuotedMessages(client, msgs, log);
+								return json(data);
+							}
+							case "get_message": {
+								if (!toolsCfg.getMessage) {
+									return json({ error: "getMessage is disabled in config" });
+								}
+								return json(await client.getMessageByMessageId(p.message_id));
+							}
+							default:
+								return json({
+									error: `Unknown action: ${String((p as Record<string, unknown>).action)}`,
 								});
-							}
-							const msgs = reverseMessageArray(data, "thread_messages");
-							await resolveQuotedMessages(client, msgs, log);
-							return json(data);
 						}
-						case "get_message": {
-							if (!toolsCfg.getMessage) {
-								return json({ error: "getMessage is disabled in config" });
-							}
-							return json(await client.getMessageByMessageId(p.message_id));
-						}
-						default:
-							return json({
-								error: `Unknown action: ${String((p as Record<string, unknown>).action)}`,
-							});
+					} catch (err) {
+						return json({
+							error: err instanceof Error ? err.message : String(err),
+						});
 					}
-				} catch (err) {
-					return json({
-						error: err instanceof Error ? err.message : String(err),
-					});
-				}
-			},
+				},
+			};
 		},
 		{ name: "seatalk" },
 	);

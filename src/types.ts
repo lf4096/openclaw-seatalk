@@ -83,7 +83,6 @@ export type SeaTalkProbeResult = {
 	ok: boolean;
 	error?: string;
 	appId?: string;
-	tokenExpire?: number;
 	latencyMs?: number;
 };
 

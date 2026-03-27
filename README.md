@@ -63,16 +63,15 @@ openclaw plugins install openclaw-seatalk
 
 OpenClaw downloads the package, installs dependencies, and registers the plugin automatically. The plugin will appear in the `openclaw onboard` channel selection.
 
-To install and pin a specific version:
+| Plugin version | OpenClaw version |
+|---------------|-----------------|
+| 0.2.x | >= 2026.3.22 |
+| 0.1.x | < 2026.3.22 |
+
+v0.2.0 migrated to the new plugin SDK (`openclaw/plugin-sdk/*`). If you are running OpenClaw < 2026.3.22, pin to 0.1.x:
 
 ```bash
-openclaw plugins install openclaw-seatalk --pin
-```
-
-To update to the latest version (restart the gateway afterwards to apply):
-
-```bash
-openclaw plugins update openclaw-seatalk
+openclaw plugins install openclaw-seatalk@0.1.6
 ```
 
 ### From source (development)
@@ -85,6 +84,28 @@ cd openclaw-seatalk
 npm install
 openclaw plugins install -l .
 ```
+
+## Upgrading
+
+Regular upgrade:
+
+```bash
+openclaw update
+```
+
+`openclaw update` automatically upgrades both OpenClaw and installed plugins.
+
+Upgrading OpenClaw across the 2026.3.22 SDK boundary (e.g. 2026.3.13 -> 2026.3.22):
+
+```bash
+openclaw plugins disable openclaw-seatalk
+openclaw update
+openclaw plugins update openclaw-seatalk
+openclaw plugins enable openclaw-seatalk
+openclaw gateway restart
+```
+
+The plugin must be disabled before upgrading because the old plugin (0.1.x) imports SDK exports removed in OpenClaw >= 2026.3.22. Disabling prevents it from loading during the upgrade.
 
 ## Gateway Modes
 
@@ -132,7 +153,7 @@ Or edit the OpenClaw config file directly (`~/.openclaw/openclaw.json`).
       webhookPort: 3210,
       webhookPath: "/callback",
       dmPolicy: "open",  // or "allowlist"
-      // allowFrom: ["e_12345678", "alice@company.com"],
+      // allowFrom: ["12345678", "alice@company.com"],
     },
   },
 }

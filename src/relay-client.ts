@@ -1,4 +1,4 @@
-import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import WebSocket from "ws";
 import {
 	listEnabledSeaTalkAccounts,
@@ -29,7 +29,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 async function connectSingleAccount(params: {
-	cfg: ClawdbotConfig;
+	cfg: OpenClawConfig;
 	account: ResolvedSeaTalkAccount;
 	relayUrl: string;
 	runtime?: RuntimeEnv;

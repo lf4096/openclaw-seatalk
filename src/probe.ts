@@ -15,7 +15,7 @@ export async function probeSeaTalk(params?: {
 	try {
 		const client = getSeaTalkClient(params.appId, params.appSecret);
 		const start = Date.now();
-		const token = await client.getAccessToken();
+		await client.getAccessToken();
 		const latencyMs = Date.now() - start;
 
 		return {

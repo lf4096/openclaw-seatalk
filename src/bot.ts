@@ -1,9 +1,13 @@
-import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+import {
+	resolveSendableOutboundReplyParts,
+	sendMediaWithLeadingCaption,
+} from "openclaw/plugin-sdk/reply-payload";
 import { resolveSeaTalkAccount } from "./accounts.js";
 import type { SeaTalkClient } from "./client.js";
 import { buildSeaTalkMediaPayload, resolveInboundMedia } from "./media.js";
 import { getSeatalkRuntime } from "./runtime.js";
-import { sendGroupTextMessage, sendTextMessage } from "./send.js";
+import { sendGroupTextMessage, sendMediaToTarget, sendTextMessage } from "./send.js";
 import type {
 	SeaTalkCallbackRequest,
 	SeaTalkGroupMessageEvent,
@@ -13,7 +17,7 @@ import type {
 } from "./types.js";
 
 export function dispatchSeaTalkEvent(params: {
-	cfg: ClawdbotConfig;
+	cfg: OpenClawConfig;
 	event: SeaTalkCallbackRequest;
 	client: SeaTalkClient;
 	runtime?: RuntimeEnv;
@@ -83,10 +87,21 @@ function tryRecordEvent(eventId: string): boolean {
 const DEBOUNCE_SLIDE_MS = 1500;
 const DEBOUNCE_HARD_CAP_MS = 5000;
 
-type BufferEntry = {
+type DmBufferEntry = {
+	kind: "dm";
 	event: SeaTalkCallbackRequest;
 	parsedEvent: SeaTalkMessageEvent;
 };
+
+type GroupBufferEntry = {
+	kind: "group";
+	event: SeaTalkCallbackRequest;
+	groupEvent: SeaTalkGroupMessageEvent;
+	groupId: string;
+	eventType: string;
+};
+
+type BufferEntry = DmBufferEntry | GroupBufferEntry;
 
 type DebounceState = {
 	entries: BufferEntry[];
@@ -96,7 +111,7 @@ type DebounceState = {
 };
 
 type DebounceContext = {
-	cfg: ClawdbotConfig;
+	cfg: OpenClawConfig;
 	client: SeaTalkClient;
 	runtime?: RuntimeEnv;
 	accountId: string;
@@ -108,6 +123,17 @@ function dmDebounceKey(accountId: string, employeeCode: string, threadId?: strin
 	return threadId
 		? `${accountId}:dm:${employeeCode}:t:${threadId}`
 		: `${accountId}:dm:${employeeCode}`;
+}
+
+function groupDebounceKey(
+	accountId: string,
+	groupId: string,
+	employeeCode: string,
+	threadId?: string,
+): string {
+	return threadId
+		? `${accountId}:grp:${groupId}:${employeeCode}:t:${threadId}`
+		: `${accountId}:grp:${groupId}:${employeeCode}`;
 }
 
 function scheduleFlush(key: string, state: DebounceState): void {
@@ -133,10 +159,20 @@ function flushBuffer(key: string): void {
 	const entries = state.entries;
 	if (entries.length === 0) return;
 
-	processBufferedEvents(entries, state.context).catch((err) => {
-		const error = state.context.runtime?.error ?? console.error;
-		error(`seatalk[${state.context.accountId}]: flush error: ${String(err)}`);
-	});
+	const first = entries[0];
+	if (first.kind === "dm") {
+		const dmEntries = entries as DmBufferEntry[];
+		processBufferedDmEvents(dmEntries, state.context).catch((err) => {
+			const error = state.context.runtime?.error ?? console.error;
+			error(`seatalk[${state.context.accountId}]: flush error: ${String(err)}`);
+		});
+	} else {
+		const groupEntries = entries as GroupBufferEntry[];
+		processBufferedGroupEvents(groupEntries, state.context).catch((err) => {
+			const error = state.context.runtime?.error ?? console.error;
+			error(`seatalk[${state.context.accountId}]: group flush error: ${String(err)}`);
+		});
+	}
 }
 
 function pushToBuffer(key: string, entry: BufferEntry, context: DebounceContext): void {
@@ -204,8 +240,29 @@ async function resolveQuotedMessage(params: {
 	}
 }
 
-async function processBufferedEvents(
-	entries: BufferEntry[],
+async function deliverMediaReplies(params: {
+	mediaUrls: string[];
+	client: SeaTalkClient;
+	to: string;
+	threadId?: string;
+	isGroup: boolean;
+	log: (msg: string) => void;
+}): Promise<void> {
+	const { mediaUrls, client, to, threadId, isGroup, log } = params;
+	await sendMediaWithLeadingCaption({
+		mediaUrls,
+		caption: "",
+		send: async ({ mediaUrl }) => {
+			await sendMediaToTarget({ client, to, mediaUrl, threadId, isGroup });
+		},
+		onError: async ({ error, mediaUrl }) => {
+			log(`seatalk: failed to send media ${mediaUrl}: ${String(error)}`);
+		},
+	});
+}
+
+async function processBufferedDmEvents(
+	entries: DmBufferEntry[],
 	context: DebounceContext,
 ): Promise<void> {
 	const { cfg, client, runtime, accountId } = context;
@@ -267,12 +324,15 @@ async function processBufferedEvents(
 		if (media) mediaList.push(media);
 	}
 
-	const quotedMessageId = first.message.quoted_message_id;
-	let quotedText: string | null = null;
-	if (quotedMessageId) {
-		const quoted = await resolveQuotedMessage({ client, quotedMessageId, log });
+	const seenQuotedIds = new Set<string>();
+	const quotedTexts: string[] = [];
+	for (const { parsedEvent } of entries) {
+		const qid = parsedEvent.message.quoted_message_id;
+		if (!qid || seenQuotedIds.has(qid)) continue;
+		seenQuotedIds.add(qid);
+		const quoted = await resolveQuotedMessage({ client, quotedMessageId: qid, log });
 		if (quoted) {
-			quotedText = quoted.text;
+			quotedTexts.push(quoted.text);
 			mediaList.push(...quoted.media);
 		}
 	}
@@ -280,8 +340,9 @@ async function processBufferedEvents(
 	const mediaPayload = buildSeaTalkMediaPayload(mediaList);
 
 	let messageText = textParts.join("\n");
-	if (quotedText) {
-		messageText = messageText ? `${quotedText}\n${messageText}` : quotedText;
+	if (quotedTexts.length > 0) {
+		const quotedBlock = quotedTexts.join("\n");
+		messageText = messageText ? `${quotedBlock}\n${messageText}` : quotedBlock;
 	}
 	if (!messageText && mediaList.length > 0) {
 		messageText = mediaList.map((m) => m.placeholder).join(" ");
@@ -331,7 +392,8 @@ async function processBufferedEvents(
 
 		const metadata: Record<string, string> = {};
 		if (threadId) metadata.threadId = threadId;
-		if (quotedMessageId) metadata.quotedMessageId = quotedMessageId;
+		const firstQuotedId = first.message.quoted_message_id;
+		if (firstQuotedId) metadata.quotedMessageId = firstQuotedId;
 
 		const ctxPayload = core.channel.reply.finalizeInboundContext({
 			Body: body,
@@ -368,12 +430,25 @@ async function processBufferedEvents(
 		const typingResult = core.channel.reply.createReplyDispatcherWithTyping({
 			humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
 			deliver: async (payload) => {
-				const text = payload.text?.trim();
-				if (text) {
+				const reply = resolveSendableOutboundReplyParts(payload);
+				if (!reply.hasText && !reply.hasMedia) return;
+
+				if (reply.hasText) {
 					log(
 						`seatalk[${accountId}]: inline deliver DM to ${employeeCode} threadId=${threadId || "none"}`,
 					);
-					await sendTextMessage(client, employeeCode, text, 1, threadId);
+					await sendTextMessage(client, employeeCode, reply.trimmedText, 1, threadId);
+				}
+
+				if (reply.hasMedia) {
+					await deliverMediaReplies({
+						mediaUrls: reply.mediaUrls,
+						client,
+						to: employeeCode,
+						threadId,
+						isGroup: false,
+						log,
+					});
 				}
 			},
 			onError: (err) => {
@@ -408,7 +483,7 @@ async function processBufferedEvents(
 }
 
 export async function handleSeaTalkMessage(params: {
-	cfg: ClawdbotConfig;
+	cfg: OpenClawConfig;
 	event: SeaTalkCallbackRequest;
 	client: SeaTalkClient;
 	runtime?: RuntimeEnv;
@@ -417,7 +492,7 @@ export async function handleSeaTalkMessage(params: {
 	const { cfg, event, client, runtime, accountId } = params;
 	const log = runtime?.log ?? console.log;
 
-	if (!tryRecordEvent(event.event_id)) {
+	if (!tryRecordEvent(`${accountId}:${event.event_id}`)) {
 		log(`seatalk[${accountId}]: skipping duplicate event ${event.event_id}`);
 		return;
 	}
@@ -433,14 +508,11 @@ export async function handleSeaTalkMessage(params: {
 	);
 
 	const key = dmDebounceKey(accountId, msgEvent.employee_code, msgEvent.message.thread_id);
-	pushToBuffer(key, { event, parsedEvent: msgEvent }, { cfg, client, runtime, accountId });
-}
-
-function extractGroupText(msg: SeaTalkMessage): string {
-	if (msg.tag === "text") {
-		return msg.text?.plain_text ?? msg.text?.content ?? "";
-	}
-	return "";
+	pushToBuffer(
+		key,
+		{ kind: "dm", event, parsedEvent: msgEvent },
+		{ cfg, client, runtime, accountId },
+	);
 }
 
 function checkGroupAccess(params: {
@@ -491,7 +563,7 @@ function checkGroupAccess(params: {
 }
 
 export async function handleSeaTalkGroupMessage(params: {
-	cfg: ClawdbotConfig;
+	cfg: OpenClawConfig;
 	event: SeaTalkCallbackRequest;
 	client: SeaTalkClient;
 	runtime?: RuntimeEnv;
@@ -499,9 +571,8 @@ export async function handleSeaTalkGroupMessage(params: {
 }): Promise<void> {
 	const { cfg, event, client, runtime, accountId } = params;
 	const log = runtime?.log ?? console.log;
-	const error = runtime?.error ?? console.error;
 
-	if (!tryRecordEvent(event.event_id)) {
+	if (!tryRecordEvent(`${accountId}:${event.event_id}`)) {
 		log(`seatalk[${accountId}]: skipping duplicate group event ${event.event_id}`);
 		return;
 	}
@@ -546,16 +617,51 @@ export async function handleSeaTalkGroupMessage(params: {
 		return;
 	}
 
-	const mediaMessages: SeaTalkMessage[] = [];
-	let messageText = "";
+	const key = groupDebounceKey(accountId, groupId, employeeCode, threadId);
+	pushToBuffer(
+		key,
+		{ kind: "group", event, groupEvent, groupId, eventType: event.event_type },
+		{ cfg, client, runtime, accountId },
+	);
+}
 
-	if (msg.tag === "text") {
-		messageText = extractGroupText(msg);
-	} else if (msg.tag === "image" || msg.tag === "file" || msg.tag === "video") {
-		mediaMessages.push(msg);
-	} else if (msg.tag === "combined_forwarded_chat_history") {
-		log(`seatalk[${accountId}]: skipping combined_forwarded_chat_history in group ${groupId}`);
-		return;
+async function processBufferedGroupEvents(
+	entries: GroupBufferEntry[],
+	context: DebounceContext,
+): Promise<void> {
+	const { cfg, client, runtime, accountId } = context;
+	const log = runtime?.log ?? console.log;
+	const error = runtime?.error ?? console.error;
+
+	const first = entries[0];
+	const groupId = first.groupId;
+	const msg = first.groupEvent.message;
+	const sender = msg.sender;
+	const employeeCode = sender.employee_code;
+	const senderEmail = sender.email;
+	const threadId = msg.thread_id;
+
+	const textParts: string[] = [];
+	const mediaMessages: SeaTalkMessage[] = [];
+
+	for (const { groupEvent } of entries) {
+		const m = groupEvent.message;
+		switch (m.tag) {
+			case "text":
+				if (m.text?.plain_text || m.text?.content)
+					textParts.push(m.text.plain_text ?? m.text.content ?? "");
+				break;
+			case "image":
+			case "file":
+			case "video":
+				mediaMessages.push(m);
+				break;
+			case "combined_forwarded_chat_history":
+				log(
+					`seatalk[${accountId}]: skipping combined_forwarded_chat_history in group ${groupId}`,
+				);
+				break;
+		}
 	}
 
 	const mediaList: SeaTalkMediaInfo[] = [];
@@ -564,7 +670,7 @@ export async function handleSeaTalkGroupMessage(params: {
 		if (media) mediaList.push(media);
 	}
 
-	const quotedMessageId = msg.quoted_message_id;
+	const quotedMessageId = first.groupEvent.message.quoted_message_id;
 	let quotedText: string | null = null;
 	if (quotedMessageId) {
 		const quoted = await resolveQuotedMessage({ client, quotedMessageId, log });
@@ -576,6 +682,7 @@ export async function handleSeaTalkGroupMessage(params: {
 
 	const mediaPayload = buildSeaTalkMediaPayload(mediaList);
 
+	let messageText = textParts.join("\n");
 	if (quotedText) {
 		messageText = messageText ? `${quotedText}\n${messageText}` : quotedText;
 	}
@@ -591,6 +698,9 @@ export async function handleSeaTalkGroupMessage(params: {
 
 	const senderName = employeeCode + (senderEmail ? ` (${senderEmail})` : "");
 	const messageId = msg.message_id;
+	const wasMentioned = entries.some(
+		(e) => e.eventType === "new_mentioned_message_received_from_group_chat",
+	);
 
 	try {
 		const core = getSeatalkRuntime();
@@ -620,6 +730,9 @@ export async function handleSeaTalkGroupMessage(params: {
 			body: `${senderName}: ${messageText}`,
 		});
 
+		const account = resolveSeaTalkAccount({ cfg, accountId });
+		const seatalkCfg = account.config;
+
 		const metadata: Record<string, string> = { groupId };
 		if (threadId) metadata.threadId = threadId;
 		if (quotedMessageId) metadata.quotedMessageId = quotedMessageId;
@@ -641,7 +754,7 @@ export async function handleSeaTalkGroupMessage(params: {
 			MessageSid: messageId,
 			MessageThreadId: threadId || undefined,
 			Timestamp: Date.now(),
-			WasMentioned: event.event_type === "new_mentioned_message_received_from_group_chat",
+			WasMentioned: wasMentioned,
 			CommandAuthorized: true,
 			OriginatingChannel: "seatalk" as const,
 			OriginatingTo: `group:${groupId}`,
@@ -661,9 +774,28 @@ export async function handleSeaTalkGroupMessage(params: {
 		const typingResult = core.channel.reply.createReplyDispatcherWithTyping({
 			humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
 			deliver: async (payload) => {
-				const text = payload.text?.trim();
-				if (text) {
-					await sendGroupTextMessage(client, groupId, text, 1, replyThreadId);
+				const reply = resolveSendableOutboundReplyParts(payload);
+				if (!reply.hasText && !reply.hasMedia) return;
+
+				if (reply.hasText) {
+					await sendGroupTextMessage(
+						client,
+						groupId,
+						reply.trimmedText,
+						1,
+						replyThreadId,
+					);
+				}
+
+				if (reply.hasMedia) {
+					await deliverMediaReplies({
+						mediaUrls: reply.mediaUrls,
+						client,
+						to: groupId,
+						threadId: replyThreadId,
+						isGroup: true,
+						log,
+					});
 				}
 			},
 			onError: (err) => {

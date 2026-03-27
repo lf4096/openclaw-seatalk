@@ -1,8 +1,8 @@
-import type { ClawdbotConfig } from "openclaw/plugin-sdk";
-import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/core";
 import type { ResolvedSeaTalkAccount, SeaTalkAccountConfig, SeaTalkConfig } from "./types.js";
 
-function listConfiguredAccountIds(cfg: ClawdbotConfig): string[] {
+function listConfiguredAccountIds(cfg: OpenClawConfig): string[] {
 	const accounts = (cfg.channels?.seatalk as SeaTalkConfig)?.accounts;
 	if (!accounts || typeof accounts !== "object") {
 		return [];
@@ -10,7 +10,7 @@ function listConfiguredAccountIds(cfg: ClawdbotConfig): string[] {
 	return Object.keys(accounts).filter(Boolean);
 }
 
-export function listSeaTalkAccountIds(cfg: ClawdbotConfig): string[] {
+export function listSeaTalkAccountIds(cfg: OpenClawConfig): string[] {
 	const ids = listConfiguredAccountIds(cfg);
 	if (ids.length === 0) {
 		return [DEFAULT_ACCOUNT_ID];
@@ -18,7 +18,7 @@ export function listSeaTalkAccountIds(cfg: ClawdbotConfig): string[] {
 	return [...ids].toSorted((a, b) => a.localeCompare(b));
 }
 
-export function resolveDefaultSeaTalkAccountId(cfg: ClawdbotConfig): string {
+export function resolveDefaultSeaTalkAccountId(cfg: OpenClawConfig): string {
 	const ids = listSeaTalkAccountIds(cfg);
 	if (ids.includes(DEFAULT_ACCOUNT_ID)) {
 		return DEFAULT_ACCOUNT_ID;
@@ -27,7 +27,7 @@ export function resolveDefaultSeaTalkAccountId(cfg: ClawdbotConfig): string {
 }
 
 function resolveAccountConfig(
-	cfg: ClawdbotConfig,
+	cfg: OpenClawConfig,
 	accountId: string,
 ): SeaTalkAccountConfig | undefined {
 	const accounts = (cfg.channels?.seatalk as SeaTalkConfig)?.accounts;
@@ -37,7 +37,7 @@ function resolveAccountConfig(
 	return accounts[accountId];
 }
 
-function mergeSeaTalkAccountConfig(cfg: ClawdbotConfig, accountId: string): SeaTalkConfig {
+function mergeSeaTalkAccountConfig(cfg: OpenClawConfig, accountId: string): SeaTalkConfig {
 	const seatalkCfg = cfg.channels?.seatalk as SeaTalkConfig | undefined;
 	const { accounts: _ignored, ...base } = seatalkCfg ?? {};
 	const account = resolveAccountConfig(cfg, accountId) ?? {};
@@ -59,7 +59,7 @@ export function resolveSeaTalkCredentials(cfg?: SeaTalkConfig): {
 }
 
 export function resolveSeaTalkAccount(params: {
-	cfg: ClawdbotConfig;
+	cfg: OpenClawConfig;
 	accountId?: string | null;
 }): ResolvedSeaTalkAccount {
 	const accountId = normalizeAccountId(params.accountId);
@@ -86,7 +86,7 @@ export function resolveSeaTalkAccount(params: {
 	};
 }
 
-export function listEnabledSeaTalkAccounts(cfg: ClawdbotConfig): ResolvedSeaTalkAccount[] {
+export function listEnabledSeaTalkAccounts(cfg: OpenClawConfig): ResolvedSeaTalkAccount[] {
 	return listSeaTalkAccountIds(cfg)
 		.map((accountId) => resolveSeaTalkAccount({ cfg, accountId }))
 		.filter((account) => account.enabled && account.configured);

@@ -1,47 +1,17 @@
-import type {
-	ChannelOnboardingAdapter,
-	ChannelOnboardingDmPolicy,
-	ClawdbotConfig,
-	DmPolicy,
-	WizardPrompter,
-} from "openclaw/plugin-sdk";
-import { DEFAULT_ACCOUNT_ID, addWildcardAllowFrom } from "openclaw/plugin-sdk";
+import {
+	type ChannelSetupDmPolicy,
+	type ChannelSetupWizard,
+	DEFAULT_ACCOUNT_ID,
+	type OpenClawConfig,
+	createStandardChannelSetupStatus,
+	createTopLevelChannelDmPolicy,
+	mergeAllowFromEntries,
+} from "openclaw/plugin-sdk/setup";
 import { resolveSeaTalkCredentials } from "./accounts.js";
 import { probeSeaTalk } from "./probe.js";
 import type { SeaTalkConfig } from "./types.js";
 
 const channel = "seatalk" as const;
-
-function setSeaTalkDmPolicy(cfg: ClawdbotConfig, dmPolicy: DmPolicy): ClawdbotConfig {
-	const allowFrom =
-		dmPolicy === "open"
-			? addWildcardAllowFrom(cfg.channels?.seatalk?.allowFrom)?.map((entry) => String(entry))
-			: undefined;
-	return {
-		...cfg,
-		channels: {
-			...cfg.channels,
-			seatalk: {
-				...cfg.channels?.seatalk,
-				dmPolicy,
-				...(allowFrom ? { allowFrom } : {}),
-			},
-		},
-	};
-}
-
-function setSeaTalkAllowFrom(cfg: ClawdbotConfig, allowFrom: string[]): ClawdbotConfig {
-	return {
-		...cfg,
-		channels: {
-			...cfg.channels,
-			seatalk: {
-				...cfg.channels?.seatalk,
-				allowFrom,
-			},
-		},
-	};
-}
 
 function parseAllowFromInput(raw: string): string[] {
 	return raw
@@ -51,48 +21,65 @@ function parseAllowFromInput(raw: string): string[] {
 }
 
 async function promptSeaTalkAllowFrom(params: {
-	cfg: ClawdbotConfig;
-	prompter: WizardPrompter;
-}): Promise<ClawdbotConfig> {
-	const existing = params.cfg.channels?.seatalk?.allowFrom ?? [];
-	await params.prompter.note(
+	cfg: OpenClawConfig;
+	prompter: Parameters<NonNullable<ChannelSetupDmPolicy["promptAllowFrom"]>>[0]["prompter"];
+}): Promise<OpenClawConfig> {
+	const { cfg, prompter } = params;
+	const existing = (cfg.channels?.seatalk as SeaTalkConfig | undefined)?.allowFrom ?? [];
+	await prompter.note(
 		[
 			"Allowlist SeaTalk DMs by email or employee_code.",
 			"Examples:",
 			"- alice@company.com",
-			"- e_12345678",
+			"- 12345678",
 		].join("\n"),
 		"SeaTalk allowlist",
 	);
 
 	while (true) {
-		const entry = await params.prompter.text({
+		const entry = await prompter.text({
 			message: "SeaTalk allowFrom (emails or employee_codes)",
-			placeholder: "alice@company.com, e_xxxxx",
+			placeholder: "alice@company.com, 12345678",
 			initialValue: existing[0] ? String(existing[0]) : undefined,
 			validate: (value) => (String(value ?? "").trim() ? undefined : "Required"),
 		});
 		const parts = parseAllowFromInput(String(entry));
 		if (parts.length === 0) {
-			await params.prompter.note("Enter at least one user.", "SeaTalk allowlist");
+			await prompter.note("Enter at least one user.", "SeaTalk allowlist");
 			continue;
 		}
 
-		const unique = [
-			...new Set([
-				...existing.map((v: string | number) => String(v).trim()).filter(Boolean),
-				...parts,
-			]),
-		];
-		return setSeaTalkAllowFrom(params.cfg, unique);
+		const unique = mergeAllowFromEntries(
+			existing.map((v) => String(v)),
+			parts,
+		);
+		return {
+			...cfg,
+			channels: {
+				...cfg.channels,
+				seatalk: {
+					...cfg.channels?.seatalk,
+					allowFrom: unique,
+				},
+			},
+		} as OpenClawConfig;
 	}
 }
 
-async function promptCredentials(prompter: WizardPrompter): Promise<{
-	appId: string;
-	appSecret: string;
-	signingSecret: string;
-}> {
+const seatalkDmPolicy: ChannelSetupDmPolicy = createTopLevelChannelDmPolicy({
+	label: "SeaTalk",
+	channel,
+	policyKey: "channels.seatalk.dmPolicy",
+	allowFromKey: "channels.seatalk.allowFrom",
+	getCurrent: (cfg) =>
+		((cfg.channels?.seatalk as SeaTalkConfig | undefined)?.dmPolicy ?? "allowlist") as string,
+	promptAllowFrom: async ({ cfg, prompter }) =>
+		promptSeaTalkAllowFrom({ cfg: cfg as OpenClawConfig, prompter }),
+});
+
+async function promptCredentials(
+	prompter: Parameters<NonNullable<ChannelSetupWizard["finalize"]>>[0]["prompter"],
+): Promise<{ appId: string; appSecret: string; signingSecret: string }> {
 	const appId = String(
 		await prompter.text({
 			message: "Enter SeaTalk App ID",
@@ -114,7 +101,9 @@ async function promptCredentials(prompter: WizardPrompter): Promise<{
 	return { appId, appSecret, signingSecret };
 }
 
-async function noteSeaTalkCredentialHelp(prompter: WizardPrompter): Promise<void> {
+async function noteSeaTalkCredentialHelp(
+	prompter: Parameters<NonNullable<ChannelSetupWizard["finalize"]>>[0]["prompter"],
+): Promise<void> {
 	await prompter.note(
 		[
 			"1) Go to SeaTalk Open Platform (open.seatalk.io)",
@@ -129,57 +118,25 @@ async function noteSeaTalkCredentialHelp(prompter: WizardPrompter): Promise<void
 	);
 }
 
-const dmPolicy: ChannelOnboardingDmPolicy = {
-	label: "SeaTalk",
+export const seatalkSetupWizard: ChannelSetupWizard = {
 	channel,
-	policyKey: "channels.seatalk.dmPolicy",
-	allowFromKey: "channels.seatalk.allowFrom",
-	getCurrent: (cfg) =>
-		(cfg.channels?.seatalk as SeaTalkConfig | undefined)?.dmPolicy ?? "allowlist",
-	setPolicy: (cfg, policy) => setSeaTalkDmPolicy(cfg, policy),
-	promptAllowFrom: promptSeaTalkAllowFrom,
-};
-
-export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
-	channel,
-	getStatus: async ({ cfg }) => {
-		const seatalkCfg = cfg.channels?.seatalk as SeaTalkConfig | undefined;
-		const configured = Boolean(resolveSeaTalkCredentials(seatalkCfg));
-
-		let probeResult = null;
-		if (configured && seatalkCfg) {
-			try {
-				probeResult = await probeSeaTalk({
-					appId: seatalkCfg.appId,
-					appSecret: seatalkCfg.appSecret,
-				});
-			} catch {
-				// ignore
-			}
-		}
-
-		const statusLines: string[] = [];
-		if (!configured) {
-			statusLines.push("SeaTalk: needs app credentials");
-		} else if (probeResult?.ok) {
-			statusLines.push(
-				`SeaTalk: connected (appId: ${probeResult.appId}, latency: ${probeResult.latencyMs}ms)`,
-			);
-		} else {
-			statusLines.push("SeaTalk: configured (connection not verified)");
-		}
-
-		return {
-			channel,
-			configured,
-			statusLines,
-			selectionHint: configured ? "configured" : "needs app creds",
-			quickstartScore: configured ? 2 : 0,
-		};
-	},
-
-	configure: async ({ cfg, prompter, forceAllowFrom }) => {
-		const seatalkCfg = cfg.channels?.seatalk as SeaTalkConfig | undefined;
+	status: createStandardChannelSetupStatus({
+		channelLabel: "SeaTalk",
+		configuredLabel: "configured",
+		unconfiguredLabel: "needs app credentials",
+		configuredHint: "configured",
+		unconfiguredHint: "needs app creds",
+		configuredScore: 2,
+		unconfiguredScore: 0,
+		resolveConfigured: ({ cfg }) => {
+			const seatalkCfg = cfg.channels?.seatalk as SeaTalkConfig | undefined;
+			return Boolean(resolveSeaTalkCredentials(seatalkCfg));
+		},
+	}),
+	credentials: [],
+	finalize: async ({ cfg, prompter, forceAllowFrom }) => {
+		let next = cfg;
+		const seatalkCfg = next.channels?.seatalk as SeaTalkConfig | undefined;
 		const resolved = resolveSeaTalkCredentials(seatalkCfg);
 		const hasConfigCreds = Boolean(
 			seatalkCfg?.appId?.trim() &&
@@ -193,7 +150,6 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 				process.env.SEATALK_SIGNING_SECRET?.trim(),
 		);
 
-		let next = cfg;
 		let appId: string | null = null;
 		let appSecret: string | null = null;
 		let signingSecret: string | null = null;
@@ -216,12 +172,10 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 						seatalk: {
 							...next.channels?.seatalk,
 							enabled: true,
-							dmPolicy:
-								(next.channels?.seatalk as SeaTalkConfig | undefined)?.dmPolicy ??
-								"allowlist",
+							dmPolicy: seatalkCfg?.dmPolicy ?? "allowlist",
 						},
 					},
-				};
+				} as OpenClawConfig;
 			} else {
 				({ appId, appSecret, signingSecret } = await promptCredentials(prompter));
 			}
@@ -248,12 +202,10 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 						appId,
 						appSecret,
 						signingSecret,
-						dmPolicy:
-							(next.channels?.seatalk as SeaTalkConfig | undefined)?.dmPolicy ??
-							"allowlist",
+						dmPolicy: seatalkCfg?.dmPolicy ?? "allowlist",
 					},
 				},
-			};
+			} as OpenClawConfig;
 
 			try {
 				const probe = await probeSeaTalk({ appId, appSecret });
@@ -307,14 +259,14 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 					mode,
 				},
 			},
-		};
+		} as OpenClawConfig;
 
 		if (mode === "relay") {
 			const currentRelayUrl =
 				(next.channels?.seatalk as SeaTalkConfig | undefined)?.relayUrl ?? "";
 			const relayUrlInput = await prompter.text({
 				message: "Relay WebSocket URL",
-				placeholder: "ws://relay.example.com:8080/ws",
+				placeholder: "wss://relay.example.com/ws",
 				initialValue: currentRelayUrl || undefined,
 				validate: (value) => {
 					const v = String(value ?? "").trim();
@@ -325,6 +277,12 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 				},
 			});
 			const relayUrl = String(relayUrlInput).trim();
+			if (relayUrl.startsWith("ws://")) {
+				await prompter.note(
+					"ws:// transmits credentials (appSecret, signingSecret) unencrypted. Consider using wss:// for production.",
+					"Security warning",
+				);
+			}
 			next = {
 				...next,
 				channels: {
@@ -334,7 +292,7 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 						relayUrl,
 					},
 				},
-			};
+			} as OpenClawConfig;
 		} else {
 			const currentPort =
 				(next.channels?.seatalk as SeaTalkConfig | undefined)?.webhookPort ?? 8080;
@@ -357,7 +315,7 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 							webhookPort: port,
 						},
 					},
-				};
+				} as OpenClawConfig;
 			}
 
 			const currentPath =
@@ -383,7 +341,7 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 							webhookPath,
 						},
 					},
-				};
+				} as OpenClawConfig;
 			}
 		}
 
@@ -408,7 +366,7 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 					groupPolicy,
 				},
 			},
-		};
+		} as OpenClawConfig;
 
 		if (groupPolicy === "allowlist") {
 			const existingGroups =
@@ -420,17 +378,16 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 				validate: (value) =>
 					String(value ?? "").trim() ? undefined : "Enter at least one group ID",
 			});
-			const groupAllowFrom = parseAllowFromInput(String(groupInput));
 			next = {
 				...next,
 				channels: {
 					...next.channels,
 					seatalk: {
 						...next.channels?.seatalk,
-						groupAllowFrom,
+						groupAllowFrom: parseAllowFromInput(String(groupInput)),
 					},
 				},
-			};
+			} as OpenClawConfig;
 		}
 
 		if (groupPolicy !== "disabled") {
@@ -444,34 +401,33 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 					[];
 				const senderInput = await prompter.text({
 					message: "Sender allowlist (emails or employee_codes, comma-separated)",
-					placeholder: "alice@company.com, e_12345678",
+					placeholder: "alice@company.com, 12345678",
 					initialValue:
 						existingSenders.length > 0 ? existingSenders.join(", ") : undefined,
 					validate: (value) =>
 						String(value ?? "").trim() ? undefined : "Enter at least one user",
 				});
-				const groupSenderAllowFrom = parseAllowFromInput(String(senderInput));
 				next = {
 					...next,
 					channels: {
 						...next.channels,
 						seatalk: {
 							...next.channels?.seatalk,
-							groupSenderAllowFrom,
+							groupSenderAllowFrom: parseAllowFromInput(String(senderInput)),
 						},
 					},
-				};
+				} as OpenClawConfig;
 			}
 		}
 
-		const typingChoice = await prompter.select({
-			message: "Typing indicator",
+		const processingIndicator = await prompter.select({
+			message: "Processing indicator",
 			options: [
 				{
 					value: "typing",
 					label: "Typing — show typing status while processing (default)",
 				},
-				{ value: "off", label: "Off — no typing indicator" },
+				{ value: "off", label: "Off — no processing indicator" },
 			],
 			initialValue:
 				(next.channels?.seatalk as SeaTalkConfig | undefined)?.processingIndicator ??
@@ -483,20 +439,18 @@ export const seatalkOnboardingAdapter: ChannelOnboardingAdapter = {
 				...next.channels,
 				seatalk: {
 					...next.channels?.seatalk,
-					processingIndicator: String(typingChoice),
+					processingIndicator: String(processingIndicator),
 				},
 			},
-		};
+		} as OpenClawConfig;
 
 		if (forceAllowFrom) {
 			next = await promptSeaTalkAllowFrom({ cfg: next, prompter });
 		}
 
-		return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
+		return { cfg: next };
 	},
-
-	dmPolicy,
-
+	dmPolicy: seatalkDmPolicy,
 	disable: (cfg) => ({
 		...cfg,
 		channels: {

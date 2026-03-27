@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 import * as http from "node:http";
-import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import {
 	listEnabledSeaTalkAccounts,
 	resolveSeaTalkAccount,
@@ -11,7 +11,7 @@ import { resolveSeaTalkClient } from "./client.js";
 import type { ResolvedSeaTalkAccount, SeaTalkCallbackRequest } from "./types.js";
 
 export type MonitorSeaTalkOpts = {
-	config?: ClawdbotConfig;
+	config?: OpenClawConfig;
 	runtime?: RuntimeEnv;
 	abortSignal?: AbortSignal;
 	accountId?: string;
@@ -61,7 +61,7 @@ function readBody(req: http.IncomingMessage): Promise<Buffer> {
 }
 
 async function monitorSingleAccount(params: {
-	cfg: ClawdbotConfig;
+	cfg: OpenClawConfig;
 	account: ResolvedSeaTalkAccount;
 	runtime?: RuntimeEnv;
 	abortSignal?: AbortSignal;

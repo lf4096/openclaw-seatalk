@@ -1,6 +1,6 @@
 {
 	"name": "openclaw-seatalk",
-	"version": "0.1.6",
+	"version": "0.2.0",
 	"description": "OpenClaw SeaTalk channel plugin",
 	"type": "module",
 	"license": "Apache-2.0",
@@ -14,7 +14,7 @@
 	"engines": {
 		"node": ">=22.16.0"
 	},
-	"files": ["index.ts", "src/", "openclaw.plugin.json"],
+	"files": ["index.ts", "setup-entry.ts", "src/", "openclaw.plugin.json"],
 	"scripts": {
 		"format": "biome format --write .",
 		"format:check": "biome format .",
@@ -33,11 +33,20 @@
 		"@types/ws": "^8.5.0",
 		"openclaw": "latest"
 	},
+	"peerDependencies": {
+		"openclaw": ">=2026.3.22"
+	},
+	"peerDependenciesMeta": {
+		"openclaw": {
+			"optional": true
+		}
+	},
 	"pnpm": {
 		"onlyBuiltDependencies": ["@biomejs/biome"]
 	},
 	"openclaw": {
 		"extensions": ["./index.ts"],
+		"setupEntry": "./setup-entry.ts",
 		"channel": {
 			"id": "seatalk",
 			"label": "SeaTalk",

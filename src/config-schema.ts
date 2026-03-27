@@ -1,10 +1,20 @@
 import { z } from "zod";
 export { z };
 
-const DmPolicySchema = z.enum(["open", "allowlist"]);
+const DmPolicySchema = z.enum(["open", "allowlist", "pairing"]);
 const GatewayModeSchema = z.enum(["webhook", "relay"]);
 const GroupPolicySchema = z.enum(["disabled", "allowlist", "open"]);
 const ProcessingIndicatorSchema = z.enum(["typing", "off"]);
+const NativeCommandsSettingSchema = z.union([z.boolean(), z.literal("auto")]);
+
+const SeaTalkChannelCommandsSchema = z
+	.object({
+		native: NativeCommandsSettingSchema.optional(),
+		nativeSkills: NativeCommandsSettingSchema.optional(),
+		text: z.boolean().optional(),
+	})
+	.strict()
+	.optional();
 
 export const SeaTalkToolsConfigSchema = z
 	.object({
@@ -32,12 +42,15 @@ export const SeaTalkAccountConfigSchema = z
 		groupAllowFrom: z.array(z.string()).optional(),
 		groupSenderAllowFrom: z.array(z.string()).optional(),
 		processingIndicator: ProcessingIndicatorSchema.optional(),
+		mediaDownloadHosts: z.array(z.string()).optional(),
+		commands: SeaTalkChannelCommandsSchema,
 	})
 	.strict();
 
 export const SeaTalkConfigSchema = z
 	.object({
 		enabled: z.boolean().optional(),
+		commands: SeaTalkChannelCommandsSchema,
 		appId: z.string().optional(),
 		appSecret: z.string().optional(),
 		signingSecret: z.string().optional(),
@@ -52,6 +65,7 @@ export const SeaTalkConfigSchema = z
 		groupSenderAllowFrom: z.array(z.string()).optional(),
 		processingIndicator: ProcessingIndicatorSchema.optional().default("typing"),
 		tools: SeaTalkToolsConfigSchema.optional(),
+		mediaDownloadHosts: z.array(z.string()).optional(),
 		accounts: z.record(z.string(), SeaTalkAccountConfigSchema.optional()).optional(),
 	})
 	.strict()

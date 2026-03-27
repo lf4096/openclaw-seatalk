@@ -1,6 +1,10 @@
 import type { SeaTalkTokenInfo } from "./types.js";
 
 const BASE_URL = "https://openapi.seatalk.io";
+
+/** Hostnames allowed for inbound media downloads when `mediaDownloadHosts` is unset in config. */
+export const SEATALK_DEFAULT_MEDIA_DOWNLOAD_HOSTS = [new URL(BASE_URL).hostname] as const;
+
 const HTTP_TIMEOUT_MS = 10_000;
 const TOKEN_REFRESH_MARGIN_S = 600;
 

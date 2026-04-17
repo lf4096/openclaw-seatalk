@@ -1,5 +1,6 @@
 import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
+import { resolveChannelGroupRequireMention } from "openclaw/plugin-sdk/config-runtime";
 import {
 	resolveSendableOutboundReplyParts,
 	sendMediaWithLeadingCaption,
@@ -739,6 +740,19 @@ export async function handleSeaTalkGroupMessage(params: {
 
 	if (!access.allowed) {
 		log(`seatalk[${accountId}]: group access denied: ${access.reason}`);
+		return;
+	}
+
+	const requireMention = resolveChannelGroupRequireMention({
+		cfg,
+		channel: "seatalk",
+		groupId,
+		accountId,
+	});
+	if (requireMention && event.event_type === "new_message_received_from_thread") {
+		log(
+			`seatalk[${accountId}]: skipping thread message in group ${groupId} because requireMention=true and SeaTalk thread events do not carry an explicit mention signal`,
+		);
 		return;
 	}
 

@@ -9,6 +9,7 @@ import {
 } from "./accounts.js";
 import { dispatchSeaTalkEvent } from "./bot.js";
 import { resolveSeaTalkClient } from "./client.js";
+import { logger } from "./log.js";
 import type { ResolvedSeaTalkAccount, SeaTalkCallbackRequest } from "./types.js";
 
 export type MonitorSeaTalkOpts = {
@@ -69,8 +70,7 @@ async function monitorSingleAccount(params: {
 }): Promise<void> {
 	const { cfg, account, runtime, abortSignal } = params;
 	const { accountId } = account;
-	const log = runtime?.log ?? console.log;
-	const error = runtime?.error ?? console.error;
+	const log = logger("webhook");
 
 	const port = account.webhookPort;
 	const callbackPath = account.webhookPath;
@@ -85,7 +85,7 @@ async function monitorSingleAccount(params: {
 		throw new Error(`SeaTalk client not available for account "${accountId}"`);
 	}
 
-	log(`seatalk[${accountId}]: starting webhook server on port ${port}, path ${callbackPath}...`);
+	log.info("starting webhook", { accountId, port, path: callbackPath });
 
 	const server = http.createServer();
 
@@ -102,7 +102,7 @@ async function monitorSingleAccount(params: {
 			const signature = req.headers.signature as string | undefined;
 
 			if (!signature || !verifySignature(rawBody, signingSecret, signature)) {
-				log(`seatalk[${accountId}]: signature verification failed`);
+				log.warn("signature verification failed", { accountId });
 				res.writeHead(403);
 				res.end("Forbidden");
 				return;
@@ -114,7 +114,7 @@ async function monitorSingleAccount(params: {
 				const challenge = (body.event as { seatalk_challenge?: string })?.seatalk_challenge;
 				res.writeHead(200, { "Content-Type": "application/json" });
 				res.end(JSON.stringify({ seatalk_challenge: challenge }));
-				log(`seatalk[${accountId}]: URL verification challenge responded`);
+				log.info("url verification responded", { accountId });
 				return;
 			}
 
@@ -123,7 +123,7 @@ async function monitorSingleAccount(params: {
 
 			dispatchSeaTalkEvent({ cfg, event: body, client, runtime, accountId });
 		} catch (err) {
-			error(`seatalk[${accountId}]: request processing error: ${String(err)}`);
+			log.error("request processing error", { accountId, err: String(err) });
 			if (!res.headersSent) {
 				if (err instanceof PayloadTooLargeError) {
 					res.writeHead(413);
@@ -142,7 +142,7 @@ async function monitorSingleAccount(params: {
 		};
 
 		const handleAbort = () => {
-			log(`seatalk[${accountId}]: abort signal received, stopping webhook server`);
+			log.info("abort received, stopping webhook", { accountId });
 			cleanup();
 			resolve();
 		};
@@ -156,11 +156,11 @@ async function monitorSingleAccount(params: {
 		abortSignal?.addEventListener("abort", handleAbort, { once: true });
 
 		server.listen(port, () => {
-			log(`seatalk[${accountId}]: webhook server listening on port ${port}`);
+			log.info("webhook listening", { accountId, port });
 		});
 
 		server.on("error", (err) => {
-			error(`seatalk[${accountId}]: webhook server error: ${err}`);
+			log.error("webhook server error", { accountId, err: String(err) });
 			abortSignal?.removeEventListener("abort", handleAbort);
 			reject(err);
 		});
@@ -173,7 +173,7 @@ export async function monitorSeaTalkProvider(opts: MonitorSeaTalkOpts = {}): Pro
 		throw new Error("Config is required for SeaTalk monitor");
 	}
 
-	const log = opts.runtime?.log ?? console.log;
+	const log = logger("webhook");
 
 	if (opts.accountId) {
 		const account = resolveSeaTalkAccount({ cfg, accountId: opts.accountId });
@@ -193,9 +193,10 @@ export async function monitorSeaTalkProvider(opts: MonitorSeaTalkOpts = {}): Pro
 		throw new Error("No enabled SeaTalk accounts configured");
 	}
 
-	log(
-		`seatalk: starting ${accounts.length} account(s): ${accounts.map((a) => a.accountId).join(", ")}`,
-	);
+	log.info("starting accounts", {
+		count: accounts.length,
+		accountIds: accounts.map((a) => a.accountId),
+	});
 
 	await Promise.all(
 		accounts.map((account) =>

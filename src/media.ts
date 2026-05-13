@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { SeaTalkClient } from "./client.js";
+import { logger } from "./log.js";
 import { getSeatalkRuntime } from "./runtime.js";
 import type { SeaTalkMediaInfo, SeaTalkMessage, SeaTalkOutboundMedia } from "./types.js";
 
@@ -47,9 +48,9 @@ export async function resolveInboundMedia(params: {
 	message: SeaTalkMessage;
 	client: SeaTalkClient;
 	mediaAllowHosts?: string[] | null;
-	log?: (msg: string) => void;
 }): Promise<SeaTalkMediaInfo | null> {
-	const { message, client, log, mediaAllowHosts } = params;
+	const { message, client, mediaAllowHosts } = params;
+	const log = logger("media");
 	const core = getSeatalkRuntime();
 	const allowedHosts = resolveMediaAllowedHosts(mediaAllowHosts);
 
@@ -78,10 +79,10 @@ export async function resolveInboundMedia(params: {
 
 	const gate = gateInboundMediaUrl(url, allowedHosts);
 	if (!gate.ok) {
-		log?.(`seatalk: rejected inbound ${message.tag} media before download: ${gate.detail}`);
+		log.warn("media rejected", { tag: message.tag, detail: gate.detail });
 		return null;
 	}
-	log?.(`seatalk: inbound ${message.tag} media url host=${gate.hostname}`);
+	log.info("media url", { tag: message.tag, host: gate.hostname });
 
 	const MAX_RETRY = 1;
 
@@ -108,7 +109,7 @@ export async function resolveInboundMedia(params: {
 				filename,
 			);
 
-			log?.(`seatalk: downloaded ${message.tag} media, saved to ${saved.path}`);
+			log.info("media downloaded", { tag: message.tag, path: saved.path });
 
 			return {
 				path: saved.path,
@@ -118,14 +119,19 @@ export async function resolveInboundMedia(params: {
 			};
 		} catch (err) {
 			if (attempt < MAX_RETRY) {
-				log?.(
-					`seatalk: retry ${attempt + 1}/${MAX_RETRY} downloading ${message.tag} media: ${String(err)}`,
-				);
+				log.warn("media download retry", {
+					tag: message.tag,
+					attempt: attempt + 1,
+					maxRetry: MAX_RETRY,
+					err: String(err),
+				});
 				continue;
 			}
-			log?.(
-				`seatalk: failed to download ${message.tag} media after ${MAX_RETRY + 1} attempts: ${String(err)}`,
-			);
+			log.error("media download failed", {
+				tag: message.tag,
+				attempts: MAX_RETRY + 1,
+				err: String(err),
+			});
 			return null;
 		}
 	}

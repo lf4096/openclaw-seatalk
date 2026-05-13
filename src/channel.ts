@@ -15,8 +15,10 @@ import { SeaTalkConfigSchema } from "./config-schema.js";
 import { seatalkOutbound } from "./outbound.js";
 import { probeSeaTalk } from "./probe.js";
 import { sendTextMessage } from "./send.js";
+import { resolveSeaTalkOutboundSessionRoute } from "./session-route.js";
 import { seatalkSetupWizard } from "./setup-surface.js";
 import { looksLikeEmail, looksLikeSeaTalkId, normalizeSeaTalkTarget } from "./targets.js";
+import { buildSeaTalkThreadingToolContext, resolveSeaTalkAutoThreadId } from "./threading.js";
 import type { ResolvedSeaTalkAccount, SeaTalkConfig } from "./types.js";
 
 const meta = {
@@ -189,10 +191,15 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 	setupWizard: seatalkSetupWizard,
 	messaging: {
 		normalizeTarget: (raw) => normalizeSeaTalkTarget(raw) ?? undefined,
+		resolveOutboundSessionRoute: (params) => resolveSeaTalkOutboundSessionRoute(params),
 		targetResolver: {
 			looksLikeId: looksLikeSeaTalkId,
 			hint: "<employee_code> or <email>",
 		},
+	},
+	threading: {
+		buildToolContext: (params) => buildSeaTalkThreadingToolContext(params),
+		resolveAutoThreadId: (params) => resolveSeaTalkAutoThreadId(params),
 	},
 	resolver: {
 		resolveTargets: async ({ cfg, accountId, inputs }) => {

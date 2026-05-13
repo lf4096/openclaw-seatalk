@@ -19,9 +19,12 @@
 					"webhookPath": { "type": "string" },
 					"dmPolicy": { "type": "string", "enum": ["open", "allowlist", "pairing"] },
 					"allowFrom": { "type": "array", "items": { "type": "string" } },
+					"dmThreadSession": { "type": "boolean" },
 					"groupPolicy": { "type": "string", "enum": ["disabled", "allowlist", "open"] },
 					"groupAllowFrom": { "type": "array", "items": { "type": "string" } },
 					"groupSenderAllowFrom": { "type": "array", "items": { "type": "string" } },
+					"groupThreadSession": { "type": "boolean" },
+					"threadInheritParent": { "type": "boolean" },
 					"outboundCoalescing": { "type": "boolean" },
 					"processingIndicator": { "type": "string", "enum": ["typing", "off"] },
 					"mediaAllowHosts": { "type": "array", "items": { "type": "string" } },
@@ -53,6 +56,7 @@
 									"enum": ["open", "allowlist", "pairing"]
 								},
 								"allowFrom": { "type": "array", "items": { "type": "string" } },
+								"dmThreadSession": { "type": "boolean" },
 								"groupPolicy": {
 									"type": "string",
 									"enum": ["disabled", "allowlist", "open"]
@@ -65,6 +69,8 @@
 									"type": "array",
 									"items": { "type": "string" }
 								},
+								"groupThreadSession": { "type": "boolean" },
+								"threadInheritParent": { "type": "boolean" },
 								"outboundCoalescing": { "type": "boolean" },
 								"processingIndicator": {
 									"type": "string",

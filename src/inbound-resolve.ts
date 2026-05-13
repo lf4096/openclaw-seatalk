@@ -1,5 +1,6 @@
 import { sendMediaWithLeadingCaption } from "openclaw/plugin-sdk/reply-payload";
 import type { SeaTalkClient } from "./client.js";
+import { logger } from "./log.js";
 import { resolveInboundMedia } from "./media.js";
 import { sendMediaToTarget } from "./send.js";
 import type { SeaTalkMediaInfo, SeaTalkMessage } from "./types.js";
@@ -7,7 +8,6 @@ import type { SeaTalkMediaInfo, SeaTalkMessage } from "./types.js";
 export type MessageResolveContext = {
 	client: SeaTalkClient;
 	mediaAllowHosts?: string[] | null;
-	log: (msg: string) => void;
 };
 
 function formatSenderPrefix(data: Record<string, unknown>): string {
@@ -51,7 +51,6 @@ export async function resolveMessageContent(
 			message: toSeaTalkMessage(data),
 			client: ctx.client,
 			mediaAllowHosts: ctx.mediaAllowHosts,
-			log: ctx.log,
 		});
 		if (resolved) {
 			media.push(resolved);
@@ -108,19 +107,21 @@ export async function resolveQuotedMessage(params: {
 	client: SeaTalkClient;
 	quotedMessageId: string;
 	mediaAllowHosts?: string[] | null;
-	log: (msg: string) => void;
 }): Promise<{ text: string; media: SeaTalkMediaInfo[] } | null> {
-	const { client, quotedMessageId, mediaAllowHosts, log } = params;
+	const { client, quotedMessageId, mediaAllowHosts } = params;
 	try {
 		const data = await client.getMessageByMessageId(quotedMessageId);
 		const senderObj = data.sender as { employee_code?: string; email?: string } | undefined;
 		const senderCode = senderObj?.employee_code ?? "unknown";
 		const sender = senderObj?.email ? `${senderCode} (${senderObj.email})` : senderCode;
 
-		const result = await resolveMessageContent(data, { client, mediaAllowHosts, log });
+		const result = await resolveMessageContent(data, { client, mediaAllowHosts });
 		return { text: `[Quoted from ${sender}: ${result.text}]`, media: result.media };
 	} catch (err) {
-		log(`seatalk: failed to resolve quoted message ${quotedMessageId}: ${String(err)}`);
+		logger("inbound").warn("resolve quoted message failed", {
+			quotedMessageId,
+			err: String(err),
+		});
 		return null;
 	}
 }
@@ -131,9 +132,8 @@ export async function deliverMediaReplies(params: {
 	to: string;
 	threadId?: string;
 	isGroup: boolean;
-	log: (msg: string) => void;
 }): Promise<void> {
-	const { mediaUrls, client, to, threadId, isGroup, log } = params;
+	const { mediaUrls, client, to, threadId, isGroup } = params;
 	await sendMediaWithLeadingCaption({
 		mediaUrls,
 		caption: "",
@@ -141,7 +141,13 @@ export async function deliverMediaReplies(params: {
 			await sendMediaToTarget({ client, to, mediaUrl, threadId, isGroup });
 		},
 		onError: async ({ error, mediaUrl }) => {
-			log(`seatalk: failed to send media ${mediaUrl}: ${String(error)}`);
+			logger("outbound").error("media delivery failed", {
+				to,
+				threadId,
+				isGroup,
+				mediaUrl,
+				err: String(error),
+			});
 		},
 	});
 }

@@ -5,6 +5,7 @@ import {
 } from "openclaw/plugin-sdk/channel-policy";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
+import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import { checkGroupAccess } from "./access.js";
 import { resolveSeaTalkAccount } from "./accounts.js";
@@ -15,6 +16,7 @@ import {
 	resolveForwardedMessages,
 	resolveQuotedMessage,
 } from "./inbound-resolve.js";
+import { logger } from "./log.js";
 import { buildSeaTalkMediaPayload, resolveInboundMedia } from "./media.js";
 import { createOutboundCoalescer } from "./outbound-coalescer.js";
 import { getSeatalkRuntime } from "./runtime.js";
@@ -49,10 +51,15 @@ export function dispatchSeaTalkEvent(params: {
 	accountId: string;
 }): void {
 	const { cfg, event, client, runtime, accountId } = params;
-	const log = runtime?.log ?? console.log;
-	const error = runtime?.error ?? console.error;
+	const log = logger("event");
 	const handle = (fn: () => Promise<void>) =>
-		fn().catch((err) => error(`seatalk[${accountId}]: event error: ${String(err)}`));
+		fn().catch((err) =>
+			log.error("event handler failed", {
+				accountId,
+				eventType: event.event_type,
+				err: String(err),
+			}),
+		);
 
 	switch (event.event_type) {
 		case "message_from_bot_subscriber":
@@ -63,22 +70,22 @@ export function dispatchSeaTalkEvent(params: {
 			handle(() => handleSeaTalkGroupMessage({ cfg, event, client, runtime, accountId }));
 			break;
 		case "new_bot_subscriber": {
-			const ec = (event.event as { employee_code?: string })?.employee_code;
-			log(`seatalk[${accountId}]: new subscriber: ${ec}`);
+			const employeeCode = (event.event as { employee_code?: string })?.employee_code;
+			log.info("new subscriber", { accountId, employeeCode });
 			break;
 		}
 		case "bot_added_to_group_chat": {
-			const gid = (event.event as { group_id?: string })?.group_id;
-			log(`seatalk[${accountId}]: bot added to group: ${gid}`);
+			const groupId = (event.event as { group_id?: string })?.group_id;
+			log.info("bot added to group", { accountId, groupId });
 			break;
 		}
 		case "bot_removed_from_group_chat": {
-			const gid = (event.event as { group_id?: string })?.group_id;
-			log(`seatalk[${accountId}]: bot removed from group: ${gid}`);
+			const groupId = (event.event as { group_id?: string })?.group_id;
+			log.info("bot removed from group", { accountId, groupId });
 			break;
 		}
 		default:
-			log(`seatalk[${accountId}]: unhandled event type: ${event.event_type}`);
+			log.warn("unhandled event", { accountId, eventType: event.event_type });
 	}
 }
 
@@ -191,14 +198,18 @@ function flushBuffer(key: string): void {
 	if (first.kind === "dm") {
 		const dmEntries = entries as DmBufferEntry[];
 		processBufferedDmEvents(dmEntries, state.context).catch((err) => {
-			const error = state.context.runtime?.error ?? console.error;
-			error(`seatalk[${state.context.accountId}]: flush error: ${String(err)}`);
+			logger("inbound").error("dm flush failed", {
+				accountId: state.context.accountId,
+				err: String(err),
+			});
 		});
 	} else {
 		const groupEntries = entries as GroupBufferEntry[];
 		processBufferedGroupEvents(groupEntries, state.context).catch((err) => {
-			const error = state.context.runtime?.error ?? console.error;
-			error(`seatalk[${state.context.accountId}]: group flush error: ${String(err)}`);
+			logger("inbound").error("group flush failed", {
+				accountId: state.context.accountId,
+				err: String(err),
+			});
 		});
 	}
 }
@@ -223,9 +234,8 @@ async function processBufferedDmEvents(
 	entries: DmBufferEntry[],
 	context: DebounceContext,
 ): Promise<void> {
-	const { cfg, client, runtime, accountId } = context;
-	const log = runtime?.log ?? console.log;
-	const error = runtime?.error ?? console.error;
+	const { cfg, client, accountId } = context;
+	const log = logger("inbound");
 
 	const first = entries[0].parsedEvent;
 	const employeeCode = first.employee_code;
@@ -258,34 +268,32 @@ async function processBufferedDmEvents(
 			senderIdLine: `Your SeaTalk employee code: ${employeeCode}`,
 			meta: email ? { email } : undefined,
 			onCreated: ({ code }) => {
-				log(`seatalk[${accountId}]: pairing request sender=${employeeCode} code=${code}`);
+				log.info("pairing challenge issued", { accountId, employeeCode, code });
 			},
 			sendPairingReply: async (text) => {
 				await sendTextMessage(client, employeeCode, text, 1, first.message.thread_id);
 			},
 			onReplyError: (err) => {
-				log(
-					`seatalk[${accountId}]: pairing reply failed for ${employeeCode}: ${String(err)}`,
-				);
+				log.warn("pairing reply failed", { accountId, employeeCode, err: String(err) });
 			},
 		});
 		if (!result.created) {
-			log(`seatalk[${accountId}]: pairing already pending for ${employeeCode}`);
+			log.info("pairing pending", { accountId, employeeCode });
 		}
 		return;
 	}
 
 	if (accessDecision.decision !== "allow") {
-		if (accessDecision.reasonCode === DM_GROUP_ACCESS_REASON.DM_POLICY_DISABLED) {
-			log(`seatalk[${accountId}]: blocked DM from ${employeeCode} (dmPolicy=disabled)`);
-		} else {
-			log(`seatalk[${accountId}]: sender ${employeeCode} not in allowlist, dropping`);
-		}
+		const reason =
+			accessDecision.reasonCode === DM_GROUP_ACCESS_REASON.DM_POLICY_DISABLED
+				? "dm policy disabled"
+				: "sender not in allowlist";
+		log.warn("dm access denied", { accountId, employeeCode, reason });
 		return;
 	}
 
 	const mediaAllowHosts = seatalkCfg?.mediaAllowHosts;
-	const resolveCtx: MessageResolveContext = { client, mediaAllowHosts, log };
+	const resolveCtx: MessageResolveContext = { client, mediaAllowHosts };
 
 	const textParts: string[] = [];
 	const mediaList: SeaTalkMediaInfo[] = [];
@@ -304,7 +312,6 @@ async function processBufferedDmEvents(
 					message: msg,
 					client,
 					mediaAllowHosts,
-					log,
 				});
 				if (media) mediaList.push(media);
 				break;
@@ -335,7 +342,6 @@ async function processBufferedDmEvents(
 			client,
 			quotedMessageId: qid,
 			mediaAllowHosts,
-			log,
 		});
 		if (quoted) {
 			quotedTexts.push(quoted.text);
@@ -355,7 +361,7 @@ async function processBufferedDmEvents(
 	}
 
 	if (!messageText && mediaList.length === 0) {
-		log(`seatalk[${accountId}]: skipping empty message from ${employeeCode}`);
+		log.info("dm empty, skipping", { accountId, employeeCode });
 		return;
 	}
 
@@ -377,9 +383,19 @@ async function processBufferedDmEvents(
 			},
 		});
 
+		const useThreadSession = (seatalkCfg?.dmThreadSession ?? true) && Boolean(threadId);
+		const threadKeys = resolveThreadSessionKeys({
+			baseSessionKey: route.sessionKey,
+			threadId: useThreadSession ? threadId : undefined,
+			parentSessionKey:
+				useThreadSession && (seatalkCfg?.threadInheritParent ?? true)
+					? route.sessionKey
+					: undefined,
+		});
+
 		const preview = messageText.replace(/\s+/g, " ").slice(0, 160);
 		core.system.enqueueSystemEvent(`SeaTalk[${accountId}] DM from ${senderName}: ${preview}`, {
-			sessionKey: route.sessionKey,
+			sessionKey: threadKeys.sessionKey,
 			contextKey: `seatalk:message:${employeeCode}:${messageId}`,
 		});
 
@@ -409,7 +425,8 @@ async function processBufferedDmEvents(
 			CommandBody: messageText,
 			From: seatalkFrom,
 			To: seatalkTo,
-			SessionKey: route.sessionKey,
+			SessionKey: threadKeys.sessionKey,
+			ParentSessionKey: threadKeys.parentSessionKey,
 			AccountId: route.accountId,
 			ChatType: "direct" as const,
 			SenderName: senderName,
@@ -431,7 +448,9 @@ async function processBufferedDmEvents(
 		if (processingIndicator === "typing") {
 			client
 				.setSingleChatTyping(employeeCode, threadId)
-				.catch((err) => log(`seatalk[${accountId}]: typing failed: ${String(err)}`));
+				.catch((err) =>
+					log.warn("dm typing failed", { accountId, employeeCode, err: String(err) }),
+				);
 		}
 
 		const coalescingEnabled = seatalkCfg?.outboundCoalescing !== false;
@@ -449,6 +468,7 @@ async function processBufferedDmEvents(
 				})
 			: null;
 
+		const out = logger("outbound");
 		const typingResult = core.channel.reply.createReplyDispatcherWithTyping({
 			humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
 			deliver: async (payload) => {
@@ -456,9 +476,12 @@ async function processBufferedDmEvents(
 				if (!reply.hasText && !reply.hasMedia) return;
 
 				if (reply.hasText) {
-					log(
-						`seatalk[${accountId}]: inline deliver DM to ${employeeCode} threadId=${threadId || "none"}`,
-					);
+					out.info("dm inline deliver", {
+						accountId,
+						employeeCode,
+						threadId,
+						kind: "text",
+					});
 					if (coalescer) {
 						coalescer.append(reply.trimmedText);
 					} else {
@@ -470,6 +493,13 @@ async function processBufferedDmEvents(
 				}
 
 				if (reply.hasMedia) {
+					out.info("dm inline deliver", {
+						accountId,
+						employeeCode,
+						threadId,
+						kind: "media",
+						count: reply.mediaUrls.length,
+					});
 					if (coalescer) await coalescer.flush();
 					await deliverMediaReplies({
 						mediaUrls: reply.mediaUrls,
@@ -477,12 +507,15 @@ async function processBufferedDmEvents(
 						to: employeeCode,
 						threadId,
 						isGroup: false,
-						log,
 					});
 				}
 			},
 			onError: (err) => {
-				error(`seatalk[${accountId}]: reply delivery failed: ${String(err)}`);
+				out.error("dm reply delivery failed", {
+					accountId,
+					employeeCode,
+					err: String(err),
+				});
 			},
 		});
 
@@ -491,7 +524,11 @@ async function processBufferedDmEvents(
 			...typingResult.replyOptions,
 		};
 
-		log(`seatalk[${accountId}]: dispatching to agent (session=${route.sessionKey})`);
+		log.info("dm dispatching to agent", {
+			accountId,
+			employeeCode,
+			sessionKey: threadKeys.sessionKey,
+		});
 
 		try {
 			const { queuedFinal, counts } = await core.channel.reply.dispatchReplyFromConfig({
@@ -501,9 +538,12 @@ async function processBufferedDmEvents(
 				replyOptions,
 			});
 
-			log(
-				`seatalk[${accountId}]: dispatch complete (queuedFinal=${queuedFinal}, counts=${JSON.stringify(counts)})`,
-			);
+			log.info("dm dispatch complete", {
+				accountId,
+				employeeCode,
+				queuedFinal,
+				counts,
+			});
 		} finally {
 			typingResult.markDispatchIdle();
 			if (coalescer) {
@@ -512,7 +552,7 @@ async function processBufferedDmEvents(
 			}
 		}
 	} catch (err) {
-		error(`seatalk[${accountId}]: failed to dispatch message: ${String(err)}`);
+		log.error("dm dispatch failed", { accountId, employeeCode, err: String(err) });
 	}
 }
 
@@ -524,22 +564,26 @@ export async function handleSeaTalkMessage(params: {
 	accountId: string;
 }): Promise<void> {
 	const { cfg, event, client, runtime, accountId } = params;
-	const log = runtime?.log ?? console.log;
+	const log = logger("inbound");
 
 	if (!tryRecordEvent(`${accountId}:${event.event_id}`)) {
-		log(`seatalk[${accountId}]: skipping duplicate event ${event.event_id}`);
+		log.info("duplicate event skipped", { accountId, eventId: event.event_id });
 		return;
 	}
 
 	const msgEvent = event.event as unknown as SeaTalkMessageEvent;
 	if (!msgEvent?.employee_code || !msgEvent?.message) {
-		log(`seatalk[${accountId}]: malformed message event, skipping`);
+		log.warn("malformed dm event", { accountId });
 		return;
 	}
 
-	log(
-		`seatalk[${accountId}]: received ${msgEvent.message.tag} from ${msgEvent.employee_code} (threadId=${msgEvent.message.thread_id || "none"})`,
-	);
+	log.info("dm received", {
+		accountId,
+		employeeCode: msgEvent.employee_code,
+		tag: msgEvent.message.tag,
+		threadId: msgEvent.message.thread_id,
+	});
+
 	const key = dmDebounceKey(accountId, msgEvent.employee_code, msgEvent.message.thread_id);
 	pushToBuffer(
 		key,
@@ -556,10 +600,10 @@ export async function handleSeaTalkGroupMessage(params: {
 	accountId: string;
 }): Promise<void> {
 	const { cfg, event, client, runtime, accountId } = params;
-	const log = runtime?.log ?? console.log;
+	const log = logger("inbound");
 
 	if (!tryRecordEvent(`${accountId}:${event.event_id}`)) {
-		log(`seatalk[${accountId}]: skipping duplicate group event ${event.event_id}`);
+		log.info("duplicate group event skipped", { accountId, eventId: event.event_id });
 		return;
 	}
 
@@ -569,12 +613,12 @@ export async function handleSeaTalkGroupMessage(params: {
 	const sender = msg?.sender;
 
 	if (!groupId || !msg || !sender?.employee_code) {
-		log(`seatalk[${accountId}]: malformed group message event, skipping`);
+		log.warn("malformed group event", { accountId });
 		return;
 	}
 
 	if (sender.sender_type === 2) {
-		log(`seatalk[${accountId}]: ignoring bot message in group ${groupId}`);
+		log.info("ignoring bot self message", { accountId, groupId });
 		return;
 	}
 
@@ -582,9 +626,14 @@ export async function handleSeaTalkGroupMessage(params: {
 	const senderEmail = sender.email;
 	const threadId = msg.thread_id;
 
-	log(
-		`seatalk[${accountId}]: group ${groupId} ${msg.tag} from ${employeeCode} (event=${event.event_type})`,
-	);
+	log.info("group received", {
+		accountId,
+		groupId,
+		employeeCode,
+		tag: msg.tag,
+		eventType: event.event_type,
+		threadId,
+	});
 
 	const account = resolveSeaTalkAccount({ cfg, accountId });
 	const seatalkCfg = account.config;
@@ -599,7 +648,12 @@ export async function handleSeaTalkGroupMessage(params: {
 	});
 
 	if (!access.allowed) {
-		log(`seatalk[${accountId}]: group access denied: ${access.reason}`);
+		log.warn("group access denied", {
+			accountId,
+			groupId,
+			employeeCode,
+			reason: access.reason,
+		});
 		return;
 	}
 
@@ -615,9 +669,8 @@ async function processBufferedGroupEvents(
 	entries: GroupBufferEntry[],
 	context: DebounceContext,
 ): Promise<void> {
-	const { cfg, client, runtime, accountId } = context;
-	const log = runtime?.log ?? console.log;
-	const error = runtime?.error ?? console.error;
+	const { cfg, client, accountId } = context;
+	const log = logger("inbound");
 
 	const first = entries[0];
 	const groupId = first.groupId;
@@ -630,7 +683,7 @@ async function processBufferedGroupEvents(
 	const account = resolveSeaTalkAccount({ cfg, accountId });
 	const seatalkCfg = account.config;
 	const mediaAllowHosts = seatalkCfg?.mediaAllowHosts;
-	const resolveCtx: MessageResolveContext = { client, mediaAllowHosts, log };
+	const resolveCtx: MessageResolveContext = { client, mediaAllowHosts };
 
 	const textParts: string[] = [];
 	const mediaList: SeaTalkMediaInfo[] = [];
@@ -649,7 +702,6 @@ async function processBufferedGroupEvents(
 					message: m,
 					client,
 					mediaAllowHosts,
-					log,
 				});
 				if (media) mediaList.push(media);
 				break;
@@ -677,7 +729,6 @@ async function processBufferedGroupEvents(
 			client,
 			quotedMessageId,
 			mediaAllowHosts,
-			log,
 		});
 		if (quoted) {
 			quotedText = quoted.text;
@@ -695,9 +746,7 @@ async function processBufferedGroupEvents(
 		messageText = mediaList.map((m) => m.placeholder).join(" ");
 	}
 	if (!messageText && mediaList.length === 0) {
-		log(
-			`seatalk[${accountId}]: skipping empty group message from ${employeeCode} in ${groupId}`,
-		);
+		log.info("group empty, skipping", { accountId, groupId, employeeCode });
 		return;
 	}
 
@@ -720,10 +769,23 @@ async function processBufferedGroupEvents(
 			},
 		});
 
+		const useThreadSession = (seatalkCfg?.groupThreadSession ?? true) && Boolean(threadId);
+		const threadKeys = resolveThreadSessionKeys({
+			baseSessionKey: route.sessionKey,
+			threadId: useThreadSession ? threadId : undefined,
+			parentSessionKey:
+				useThreadSession && (seatalkCfg?.threadInheritParent ?? true)
+					? route.sessionKey
+					: undefined,
+		});
+
 		const preview = messageText.replace(/\s+/g, " ").slice(0, 160);
 		core.system.enqueueSystemEvent(
 			`SeaTalk[${accountId}] Group(${groupId}) from ${senderName}: ${preview}`,
-			{ sessionKey: route.sessionKey, contextKey: `seatalk:group:${groupId}:${messageId}` },
+			{
+				sessionKey: threadKeys.sessionKey,
+				contextKey: `seatalk:group:${groupId}:${messageId}`,
+			},
 		);
 
 		const sentAt = first.groupEvent.message.message_sent_time;
@@ -749,7 +811,8 @@ async function processBufferedGroupEvents(
 			CommandBody: messageText,
 			From: `seatalk:${employeeCode}`,
 			To: `group:${groupId}`,
-			SessionKey: route.sessionKey,
+			SessionKey: threadKeys.sessionKey,
+			ParentSessionKey: threadKeys.parentSessionKey,
 			AccountId: route.accountId,
 			ChatType: "group" as const,
 			SenderName: senderName,
@@ -771,7 +834,9 @@ async function processBufferedGroupEvents(
 		if (processingIndicator === "typing") {
 			client
 				.setGroupChatTyping(groupId, threadId)
-				.catch((err) => log(`seatalk[${accountId}]: group typing failed: ${String(err)}`));
+				.catch((err) =>
+					log.warn("group typing failed", { accountId, groupId, err: String(err) }),
+				);
 		}
 
 		const replyThreadId = threadId || undefined;
@@ -791,6 +856,7 @@ async function processBufferedGroupEvents(
 				})
 			: null;
 
+		const out = logger("outbound");
 		const typingResult = core.channel.reply.createReplyDispatcherWithTyping({
 			humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
 			deliver: async (payload) => {
@@ -798,6 +864,12 @@ async function processBufferedGroupEvents(
 				if (!reply.hasText && !reply.hasMedia) return;
 
 				if (reply.hasText) {
+					out.info("group inline deliver", {
+						accountId,
+						groupId,
+						threadId: replyThreadId,
+						kind: "text",
+					});
 					if (groupCoalescer) {
 						groupCoalescer.append(reply.trimmedText);
 					} else {
@@ -809,6 +881,13 @@ async function processBufferedGroupEvents(
 				}
 
 				if (reply.hasMedia) {
+					out.info("group inline deliver", {
+						accountId,
+						groupId,
+						threadId: replyThreadId,
+						kind: "media",
+						count: reply.mediaUrls.length,
+					});
 					if (groupCoalescer) await groupCoalescer.flush();
 					await deliverMediaReplies({
 						mediaUrls: reply.mediaUrls,
@@ -816,12 +895,11 @@ async function processBufferedGroupEvents(
 						to: groupId,
 						threadId: replyThreadId,
 						isGroup: true,
-						log,
 					});
 				}
 			},
 			onError: (err) => {
-				error(`seatalk[${accountId}]: group reply delivery failed: ${String(err)}`);
+				out.error("group reply delivery failed", { accountId, groupId, err: String(err) });
 			},
 		});
 
@@ -830,7 +908,11 @@ async function processBufferedGroupEvents(
 			...typingResult.replyOptions,
 		};
 
-		log(`seatalk[${accountId}]: dispatching group message (session=${route.sessionKey})`);
+		log.info("group dispatching to agent", {
+			accountId,
+			groupId,
+			sessionKey: threadKeys.sessionKey,
+		});
 
 		try {
 			const { queuedFinal, counts } = await core.channel.reply.dispatchReplyFromConfig({
@@ -840,9 +922,12 @@ async function processBufferedGroupEvents(
 				replyOptions,
 			});
 
-			log(
-				`seatalk[${accountId}]: group dispatch complete (queuedFinal=${queuedFinal}, counts=${JSON.stringify(counts)})`,
-			);
+			log.info("group dispatch complete", {
+				accountId,
+				groupId,
+				queuedFinal,
+				counts,
+			});
 		} finally {
 			typingResult.markDispatchIdle();
 			if (groupCoalescer) {
@@ -851,6 +936,6 @@ async function processBufferedGroupEvents(
 			}
 		}
 	} catch (err) {
-		error(`seatalk[${accountId}]: failed to dispatch group message: ${String(err)}`);
+		log.error("group dispatch failed", { accountId, groupId, err: String(err) });
 	}
 }

@@ -1,3 +1,4 @@
+import { logger } from "./log.js";
 import type { SeaTalkTokenInfo } from "./types.js";
 
 const BASE_URL = "https://openapi.seatalk.io";
@@ -131,6 +132,12 @@ export class SeaTalkClient {
 			if (data.code === 101) {
 				if (rateLimitAttempt < RATE_LIMIT_RETRY_DELAYS_MS.length) {
 					const delay = RATE_LIMIT_RETRY_DELAYS_MS[rateLimitAttempt];
+					logger("client").warn("rate limited, retrying", {
+						path,
+						attempt: rateLimitAttempt + 1,
+						delayMs: delay,
+						xRid,
+					});
 					await new Promise((r) => setTimeout(r, delay));
 					return this.apiCall<T>(method, path, body, retry, rateLimitAttempt + 1);
 				}
@@ -167,6 +174,8 @@ export class SeaTalkClient {
 		message: Record<string, unknown>,
 		threadId?: string,
 	): Promise<void> {
+		const tag = (message as { tag?: string }).tag;
+		logger("outbound").info("dm send", { employeeCode, tag, threadId });
 		const msg = threadId ? { ...message, thread_id: threadId } : message;
 		await this.apiCall("POST", "/messaging/v2/single_chat", {
 			employee_code: employeeCode,
@@ -179,6 +188,8 @@ export class SeaTalkClient {
 		message: Record<string, unknown>,
 		threadId?: string,
 	): Promise<void> {
+		const tag = (message as { tag?: string }).tag;
+		logger("outbound").info("group send", { groupId, tag, threadId });
 		const msg = threadId ? { ...message, thread_id: threadId } : message;
 		await this.apiCall("POST", "/messaging/v2/group_chat", {
 			group_id: groupId,

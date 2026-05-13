@@ -8,7 +8,7 @@ OpenClaw channel plugin for [SeaTalk](https://seatalk.io/) messaging.
 
 - **Private chat** — bidirectional text, image, file messaging with bot subscribers
 - **Group chat** — receive @mentioned messages, send text/image/file replies; configurable group allow-list and per-sender access control
-- **Thread messages** — full support for DM threads and group threads; replies are routed back to the originating thread
+- **Thread messages** — each DM or group thread runs as an isolated agent session that inherits the parent transcript on first reply; replies are routed back to the originating thread
 - **Quoted messages** — inbound messages with `quoted_message_id` are automatically resolved (text + media download) and provided to the AI as context
 - **Media handling** — inbound: image/file/video URL download; outbound: image/file base64 upload; video receive-only
 - **Typing indicator** — one-shot typing status via SeaTalk API for both private and group chats (configurable: `typing` or `off`)
@@ -199,9 +199,12 @@ Or edit the OpenClaw config file directly (`~/.openclaw/openclaw.json`).
 | `relayUrl` | string | — | WebSocket URL (relay mode only) |
 | `dmPolicy` | `"open"` \| `"allowlist"` \| `"pairing"` | `"allowlist"` | Who can DM the bot (`pairing`: approve via CLI) |
 | `allowFrom` | string[] | — | Allowed DM senders (employee codes or emails) |
+| `dmThreadSession` | boolean | `true` | Route each DM thread to its own agent session |
 | `groupPolicy` | `"disabled"` \| `"allowlist"` \| `"open"` | `"disabled"` | Group chat policy |
 | `groupAllowFrom` | string[] | — | Allowed group IDs (when `groupPolicy: "allowlist"`) |
 | `groupSenderAllowFrom` | string[] | — | Allowed senders within groups (employee codes or emails) |
+| `groupThreadSession` | boolean | `true` | Route each group thread to its own agent session |
+| `threadInheritParent` | boolean | `true` | Fork the parent transcript into new thread sessions on first reply |
 | `outboundCoalescing` | boolean | `true` | Merge consecutive reply payloads into a single message (4000-char chunking) |
 | `processingIndicator` | `"typing"` \| `"off"` | `"typing"` | Show typing status while processing |
 | `mediaAllowHosts` | string[] | `["openapi.seatalk.io"]` | Allowed hostnames for inbound media downloads (HTTPS only) |

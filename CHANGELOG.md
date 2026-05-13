@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Route DM and group threads to isolated agent sessions; new threads fork the parent transcript on first reply.
+- Outbound messages from agent-initiated sends now stay in the originating thread.
+- Switch to structured logging across all inbound and outbound paths.
+
 ## 0.3.3
 
 - Publish bundled JS only (`dist/*.js`), fixing install failure on OpenClaw versions that require compiled runtime output for TypeScript entries.

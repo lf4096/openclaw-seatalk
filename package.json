@@ -1,6 +1,6 @@
 {
 	"name": "openclaw-seatalk",
-	"version": "0.3.3",
+	"version": "0.4.0",
 	"description": "OpenClaw SeaTalk channel plugin",
 	"type": "module",
 	"main": "./dist/index.js",

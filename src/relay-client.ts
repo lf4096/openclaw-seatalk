@@ -8,6 +8,7 @@ import {
 } from "./accounts.js";
 import { dispatchSeaTalkEvent } from "./bot.js";
 import { resolveSeaTalkClient } from "./client.js";
+import { logger } from "./log.js";
 import type { MonitorSeaTalkOpts } from "./monitor.js";
 import type { ResolvedSeaTalkAccount, SeaTalkCallbackRequest } from "./types.js";
 
@@ -39,8 +40,7 @@ async function connectSingleAccount(params: {
 }): Promise<void> {
 	const { cfg, account, relayUrl, runtime, abortSignal } = params;
 	const { accountId } = account;
-	const log = runtime?.log ?? console.log;
-	const error = runtime?.error ?? console.error;
+	const log = logger("relay");
 
 	const signingSecret = resolveSeaTalkCredentials(account.config)?.signingSecret;
 	if (!account.appId || !account.appSecret || !signingSecret) {
@@ -62,7 +62,7 @@ async function connectSingleAccount(params: {
 					return;
 				}
 
-				log(`seatalk[${accountId}]: connecting to relay ${relayUrl}...`);
+				log.info("connecting", { accountId, relayUrl });
 				const ws = new WebSocket(relayUrl);
 
 				let staleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -75,9 +75,10 @@ async function connectSingleAccount(params: {
 				const armStaleTimer = () => {
 					clearStaleTimer();
 					staleTimer = setTimeout(() => {
-						error(
-							`seatalk[${accountId}]: relay silent for ${STALE_TIMEOUT_MS}ms, terminating`,
-						);
+						log.error("relay silent, terminating", {
+							accountId,
+							timeoutMs: STALE_TIMEOUT_MS,
+						});
 						ws.terminate();
 					}, STALE_TIMEOUT_MS);
 				};
@@ -95,7 +96,7 @@ async function connectSingleAccount(params: {
 
 				ws.on("open", () => {
 					armStaleTimer();
-					log(`seatalk[${accountId}]: relay connected, authenticating...`);
+					log.info("connected, authenticating", { accountId });
 					ws.send(
 						JSON.stringify({
 							type: "auth",
@@ -114,7 +115,7 @@ async function connectSingleAccount(params: {
 					try {
 						msg = JSON.parse(String(raw));
 					} catch {
-						error(`seatalk[${accountId}]: relay sent invalid JSON`);
+						log.warn("invalid relay json", { accountId });
 						return;
 					}
 
@@ -122,9 +123,9 @@ async function connectSingleAccount(params: {
 						if (msg.type === "auth_ok") {
 							authenticated = true;
 							backoff = INITIAL_BACKOFF_MS;
-							log(`seatalk[${accountId}]: relay authenticated`);
+							log.info("authenticated", { accountId });
 						} else if (msg.type === "auth_fail") {
-							error(`seatalk[${accountId}]: relay auth failed: ${msg.error}`);
+							log.error("auth failed", { accountId, err: msg.error });
 							ws.close();
 							reject(new Error(`Relay auth failed: ${msg.error}`));
 						}
@@ -147,12 +148,12 @@ async function connectSingleAccount(params: {
 							ws.send(JSON.stringify({ type: "pong" }));
 							break;
 						case "replaced":
-							log(`seatalk[${accountId}]: connection replaced by another instance`);
+							log.warn("connection replaced", { accountId });
 							ws.close();
 							resolve();
 							return;
 						default:
-							log(`seatalk[${accountId}]: unknown relay message type: ${msg.type}`);
+							log.warn("unknown relay message", { accountId, type: msg.type });
 					}
 				});
 
@@ -160,9 +161,11 @@ async function connectSingleAccount(params: {
 					clearStaleTimer();
 					abortSignal?.removeEventListener("abort", handleAbort);
 					if (authenticated) {
-						log(
-							`seatalk[${accountId}]: relay disconnected (code=${code}, reason=${String(reason)})`,
-						);
+						log.info("disconnected", {
+							accountId,
+							code,
+							reason: String(reason),
+						});
 					}
 					resolve();
 				});
@@ -170,7 +173,7 @@ async function connectSingleAccount(params: {
 				ws.on("error", (err) => {
 					clearStaleTimer();
 					abortSignal?.removeEventListener("abort", handleAbort);
-					error(`seatalk[${accountId}]: relay connection error: ${String(err)}`);
+					log.error("connection error", { accountId, err: String(err) });
 					resolve();
 				});
 			});
@@ -179,12 +182,12 @@ async function connectSingleAccount(params: {
 			if (msg.includes("Relay auth failed")) {
 				throw err;
 			}
-			error(`seatalk[${accountId}]: relay error: ${msg}`);
+			log.error("relay error", { accountId, err: msg });
 		}
 
 		if (abortSignal?.aborted) break;
 
-		log(`seatalk[${accountId}]: reconnecting in ${backoff}ms...`);
+		log.info("reconnecting", { accountId, backoffMs: backoff });
 		await sleep(backoff, abortSignal);
 		backoff = Math.min(backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
 	}
@@ -198,7 +201,7 @@ export async function connectSeaTalkRelay(
 		throw new Error("Config is required for SeaTalk relay client");
 	}
 
-	const log = opts.runtime?.log ?? console.log;
+	const log = logger("relay");
 
 	if (opts.accountId) {
 		const account = resolveSeaTalkAccount({ cfg, accountId: opts.accountId });
@@ -219,9 +222,10 @@ export async function connectSeaTalkRelay(
 		throw new Error("No enabled SeaTalk accounts configured");
 	}
 
-	log(
-		`seatalk: connecting ${accounts.length} account(s) to relay: ${accounts.map((a) => a.accountId).join(", ")}`,
-	);
+	log.info("connecting accounts", {
+		count: accounts.length,
+		accountIds: accounts.map((a) => a.accountId),
+	});
 
 	await Promise.all(
 		accounts.map((account) =>

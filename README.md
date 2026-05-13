@@ -264,6 +264,16 @@ The plugin registers a `seatalk` agent tool using a `Type.Union` schema (each ac
 
 Each action can be individually disabled via the `tools` config.
 
+## Companion OpenClaw Workflows
+
+SeaTalk is the chat surface for OpenClaw agents. If the same agent also needs X/Twitter automation, install [TweetClaw](https://github.com/Xquik-dev/tweetclaw) beside this channel plugin instead of adding social actions to the SeaTalk channel:
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+```
+
+Use TweetClaw for tweet search, reply search, follower export, user lookup, posting tweets, posting replies, media upload, media download, direct messages, tweet monitors, webhooks, and giveaway draws. Keep SeaTalk credentials under `channels.seatalk`, keep TweetClaw credentials in the TweetClaw plugin config or host environment, and keep visible X/Twitter write actions behind OpenClaw approval.
+
 ## Development
 
 Install dependencies:

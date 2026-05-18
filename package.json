@@ -11,20 +11,11 @@
 	},
 	"homepage": "https://github.com/lf4096/openclaw-seatalk#readme",
 	"bugs": "https://github.com/lf4096/openclaw-seatalk/issues",
-	"keywords": [
-		"openclaw",
-		"seatalk",
-		"chatbot",
-		"channel-plugin"
-	],
+	"keywords": ["openclaw", "seatalk", "chatbot", "channel-plugin"],
 	"engines": {
 		"node": ">=22.16.0"
 	},
-	"files": [
-		"dist/**/*.js",
-		"openclaw.plugin.json",
-		"CHANGELOG.md"
-	],
+	"files": ["dist/**/*.js", "openclaw.plugin.json", "CHANGELOG.md"],
 	"scripts": {
 		"build": "tsup",
 		"format": "biome format --write .",
@@ -56,14 +47,10 @@
 		}
 	},
 	"pnpm": {
-		"onlyBuiltDependencies": [
-			"@biomejs/biome"
-		]
+		"onlyBuiltDependencies": ["@biomejs/biome"]
 	},
 	"openclaw": {
-		"extensions": [
-			"./dist/index.js"
-		],
+		"extensions": ["./dist/index.js"],
 		"setupEntry": "./dist/setup-entry.js",
 		"channel": {
 			"id": "seatalk",

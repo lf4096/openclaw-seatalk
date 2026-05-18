@@ -9,10 +9,7 @@ export function buildSeaTalkThreadingToolContext(params: {
 	context: ChannelThreadingContext;
 	hasRepliedRef?: { value: boolean };
 }): ChannelThreadingToolContext {
-	const to = params.context.To;
-	const currentChannelId = to?.startsWith("group:")
-		? to.slice("group:".length)
-		: normalizeOptionalString(to);
+	const currentChannelId = normalizeOptionalString(params.context.To);
 	const threadId =
 		typeof params.context.MessageThreadId === "number"
 			? String(params.context.MessageThreadId)
@@ -34,7 +31,10 @@ export function resolveSeaTalkAutoThreadId(params: {
 		return undefined;
 	}
 	const targetId = isGroupTarget(params.to) ? parseGroupTarget(params.to) : params.to;
-	if (targetId !== context.currentChannelId) {
+	const channelId = isGroupTarget(context.currentChannelId)
+		? parseGroupTarget(context.currentChannelId)
+		: context.currentChannelId;
+	if (targetId !== channelId) {
 		return undefined;
 	}
 	return context.currentThreadTs;

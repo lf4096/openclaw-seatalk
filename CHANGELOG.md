@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- Fix group replies being sent as DMs when the agent omits an explicit target.
+
 ## 0.4.0
 
 - Route DM and group threads to isolated agent sessions; new threads fork the parent transcript on first reply.

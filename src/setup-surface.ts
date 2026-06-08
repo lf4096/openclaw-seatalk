@@ -72,7 +72,7 @@ const seatalkDmPolicy: ChannelSetupDmPolicy = createTopLevelChannelDmPolicy({
 	policyKey: "channels.seatalk.dmPolicy",
 	allowFromKey: "channels.seatalk.allowFrom",
 	getCurrent: (cfg) =>
-		((cfg.channels?.seatalk as SeaTalkConfig | undefined)?.dmPolicy ?? "allowlist") as string,
+		(cfg.channels?.seatalk as SeaTalkConfig | undefined)?.dmPolicy ?? "allowlist",
 	promptAllowFrom: async ({ cfg, prompter }) =>
 		promptSeaTalkAllowFrom({ cfg: cfg as OpenClawConfig, prompter }),
 });

@@ -2,8 +2,13 @@ import type {
 	ChannelThreadingContext,
 	ChannelThreadingToolContext,
 } from "openclaw/plugin-sdk/channel-contract";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
-import { isGroupTarget, parseGroupTarget } from "./targets.js";
+import { resolveSeaTalkTargetKind } from "./targets.js";
+
+function normalizeOptionalString(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
 
 export function buildSeaTalkThreadingToolContext(params: {
 	context: ChannelThreadingContext;
@@ -30,10 +35,8 @@ export function resolveSeaTalkAutoThreadId(params: {
 	if (!context?.currentThreadTs || !context.currentChannelId) {
 		return undefined;
 	}
-	const targetId = isGroupTarget(params.to) ? parseGroupTarget(params.to) : params.to;
-	const channelId = isGroupTarget(context.currentChannelId)
-		? parseGroupTarget(context.currentChannelId)
-		: context.currentChannelId;
+	const targetId = resolveSeaTalkTargetKind(params.to).id;
+	const channelId = resolveSeaTalkTargetKind(context.currentChannelId).id;
 	if (targetId !== channelId) {
 		return undefined;
 	}

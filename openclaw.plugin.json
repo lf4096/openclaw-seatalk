@@ -1,6 +1,14 @@
 {
 	"id": "openclaw-seatalk",
 	"channels": ["seatalk"],
+	"contracts": {
+		"tools": ["seatalk"]
+	},
+	"toolMetadata": {
+		"seatalk": {
+			"configSignals": [{ "rootPath": "channels", "required": ["seatalk"] }]
+		}
+	},
 	"channelConfigs": {
 		"seatalk": {
 			"label": "SeaTalk",

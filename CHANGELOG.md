@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0
+
+- Require OpenClaw 2026.6.1 or newer.
+- Rebuild inbound handling on OpenClaw's message kernel.
+- Detect group vs direct chats from the recipient id, dropping the internal `group:` prefix.
+- Keep the typing indicator visible for the whole reply.
+- Fix the SeaTalk agent tool not being registered on recent OpenClaw.
+- Fix the empty pairing approval message.
+
 ## 0.4.1
 
 - Fix group replies being sent as DMs when the agent omits an explicit target.

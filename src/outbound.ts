@@ -4,7 +4,7 @@ import { resolveSeaTalkAccount } from "./accounts.js";
 import { type SeaTalkClient, resolveSeaTalkClient } from "./client.js";
 import { getSeatalkRuntime } from "./runtime.js";
 import { sendGroupTextMessage, sendMediaToTarget, sendTextMessage } from "./send.js";
-import { isGroupTarget, looksLikeEmail, parseGroupTarget } from "./targets.js";
+import { looksLikeEmail, resolveSeaTalkTargetKind } from "./targets.js";
 
 function requireClient(cfg: OpenClawConfig, accountId?: string): SeaTalkClient {
 	const account = resolveSeaTalkAccount({ cfg, accountId });
@@ -37,14 +37,14 @@ export const seatalkOutbound: ChannelOutboundAdapter = {
 	sendText: async ({ cfg, to, text, accountId, threadId }) => {
 		const client = requireClient(cfg, accountId ?? undefined);
 		const tid = resolveThreadId(threadId);
+		const { kind, id } = resolveSeaTalkTargetKind(to);
 
-		if (isGroupTarget(to)) {
-			const groupId = parseGroupTarget(to);
-			await sendGroupTextMessage(client, groupId, text, 1, tid);
-			return { channel: "seatalk", messageId: "", chatId: to };
+		if (kind === "group") {
+			await sendGroupTextMessage(client, id, text, 1, tid);
+			return { channel: "seatalk", messageId: "", chatId: id };
 		}
 
-		const employeeCode = await resolveEmployeeCode(client, to);
+		const employeeCode = await resolveEmployeeCode(client, id);
 		await sendTextMessage(client, employeeCode, text, 1, tid);
 		return { channel: "seatalk", messageId: "", chatId: employeeCode };
 	},
@@ -52,8 +52,9 @@ export const seatalkOutbound: ChannelOutboundAdapter = {
 	sendMedia: async ({ cfg, to, text, mediaUrl, accountId, threadId }) => {
 		const client = requireClient(cfg, accountId ?? undefined);
 		const tid = resolveThreadId(threadId);
-		const isGroup = isGroupTarget(to);
-		const target = isGroup ? parseGroupTarget(to) : await resolveEmployeeCode(client, to);
+		const { kind, id } = resolveSeaTalkTargetKind(to);
+		const isGroup = kind === "group";
+		const target = isGroup ? id : await resolveEmployeeCode(client, id);
 
 		if (text?.trim()) {
 			if (isGroup) {
@@ -76,6 +77,6 @@ export const seatalkOutbound: ChannelOutboundAdapter = {
 			}
 		}
 
-		return { channel: "seatalk", messageId: "", chatId: isGroup ? to : target };
+		return { channel: "seatalk", messageId: "", chatId: target };
 	},
 };

@@ -1,12 +1,17 @@
+import type { AssembledInboundReply, InboundMediaFacts } from "openclaw/plugin-sdk/channel-inbound";
+import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
 import { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
 import {
 	DM_GROUP_ACCESS_REASON,
 	resolveDmGroupAccessWithLists,
 } from "openclaw/plugin-sdk/channel-policy";
+
+type SeaTalkDelivery = AssembledInboundReply["delivery"];
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
+import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { checkGroupAccess } from "./access.js";
 import { resolveSeaTalkAccount } from "./accounts.js";
 import type { SeaTalkClient } from "./client.js";
@@ -17,15 +22,13 @@ import {
 	resolveQuotedMessage,
 } from "./inbound-resolve.js";
 import { logger } from "./log.js";
-import { buildSeaTalkMediaPayload, resolveInboundMedia } from "./media.js";
-import { createOutboundCoalescer } from "./outbound-coalescer.js";
+import { resolveInboundMedia } from "./media.js";
 import { getSeatalkRuntime } from "./runtime.js";
 import { sendGroupTextMessage, sendTextMessage } from "./send.js";
 import type {
 	SeaTalkCallbackRequest,
 	SeaTalkGroupMessageEvent,
 	SeaTalkMediaInfo,
-	SeaTalkMessage,
 	SeaTalkMessageEvent,
 } from "./types.js";
 
@@ -116,16 +119,24 @@ function tryRecordEvent(eventId: string): boolean {
 	return true;
 }
 
-const DEBOUNCE_SLIDE_MS = 1500;
-const DEBOUNCE_HARD_CAP_MS = 5000;
-
 const SEATALK_TEXT_CHUNK_LIMIT = 4000;
-const OUTBOUND_COALESCE_IDLE_MS = 1000;
+// SeaTalk resets the typing indicator every 4s; refresh at 3s to keep it lit.
+const TYPING_KEEPALIVE_MS = 3000;
+// Fallback inbound debounce window when messages.inbound.debounceMs is unset.
+const PLUGIN_DEBOUNCE_DEFAULT_MS = 1500;
+
+type TurnContext = {
+	cfg: OpenClawConfig;
+	client: SeaTalkClient;
+	runtime?: RuntimeEnv;
+	accountId: string;
+};
 
 type DmBufferEntry = {
 	kind: "dm";
 	event: SeaTalkCallbackRequest;
 	parsedEvent: SeaTalkMessageEvent;
+	ctx: TurnContext;
 };
 
 type GroupBufferEntry = {
@@ -134,25 +145,10 @@ type GroupBufferEntry = {
 	groupEvent: SeaTalkGroupMessageEvent;
 	groupId: string;
 	eventType: string;
+	ctx: TurnContext;
 };
 
 type BufferEntry = DmBufferEntry | GroupBufferEntry;
-
-type DebounceState = {
-	entries: BufferEntry[];
-	timer: ReturnType<typeof setTimeout>;
-	firstEventAt: number;
-	context: DebounceContext;
-};
-
-type DebounceContext = {
-	cfg: OpenClawConfig;
-	client: SeaTalkClient;
-	runtime?: RuntimeEnv;
-	accountId: string;
-};
-
-const debounceBuffers = new Map<string, DebounceState>();
 
 function dmDebounceKey(accountId: string, employeeCode: string, threadId?: string): string {
 	return threadId
@@ -171,70 +167,398 @@ function groupDebounceKey(
 		: `${accountId}:grp:${groupId}:${employeeCode}`;
 }
 
-function scheduleFlush(key: string, state: DebounceState): void {
-	clearTimeout(state.timer);
+type InboundDebouncer = { enqueue: (item: BufferEntry) => Promise<void> };
 
-	const elapsed = Date.now() - state.firstEventAt;
-	const remaining = DEBOUNCE_HARD_CAP_MS - elapsed;
+let inboundDebouncer: InboundDebouncer | undefined;
 
-	if (remaining <= 0) {
-		flushBuffer(key);
+function getInboundDebouncer(): InboundDebouncer {
+	if (inboundDebouncer) return inboundDebouncer;
+	const core = getSeatalkRuntime();
+	inboundDebouncer = core.channel.debounce.createInboundDebouncer<BufferEntry>({
+		debounceMs: PLUGIN_DEBOUNCE_DEFAULT_MS,
+		resolveDebounceMs: (entry) => {
+			const ms = core.channel.debounce.resolveInboundDebounceMs({
+				cfg: entry.ctx.cfg,
+				channel: "seatalk",
+			});
+			return ms > 0 ? ms : PLUGIN_DEBOUNCE_DEFAULT_MS;
+		},
+		buildKey: (entry) =>
+			entry.kind === "dm"
+				? dmDebounceKey(
+						entry.ctx.accountId,
+						entry.parsedEvent.employee_code,
+						entry.parsedEvent.message.thread_id,
+					)
+				: groupDebounceKey(
+						entry.ctx.accountId,
+						entry.groupId,
+						entry.groupEvent.message.sender.employee_code,
+						entry.groupEvent.message.thread_id,
+					),
+		onFlush: async (entries) => {
+			const first = entries[0];
+			if (!first) return;
+			if (first.kind === "dm") {
+				await processBufferedDmEvents(entries as DmBufferEntry[]);
+			} else {
+				await processBufferedGroupEvents(entries as GroupBufferEntry[]);
+			}
+		},
+		onError: (err) => {
+			logger("inbound").error("debounce flush failed", { err: String(err) });
+		},
+	});
+	return inboundDebouncer;
+}
+
+export async function handleSeaTalkMessage(params: {
+	cfg: OpenClawConfig;
+	event: SeaTalkCallbackRequest;
+	client: SeaTalkClient;
+	runtime?: RuntimeEnv;
+	accountId: string;
+}): Promise<void> {
+	const { cfg, event, client, runtime, accountId } = params;
+	const log = logger("inbound");
+
+	if (!tryRecordEvent(`${accountId}:${event.event_id}`)) {
+		log.info("duplicate event skipped", { accountId, eventId: event.event_id });
 		return;
 	}
 
-	const delay = Math.min(DEBOUNCE_SLIDE_MS, remaining);
-	state.timer = setTimeout(() => flushBuffer(key), delay);
-}
-
-function flushBuffer(key: string): void {
-	const state = debounceBuffers.get(key);
-	if (!state) return;
-	debounceBuffers.delete(key);
-
-	const entries = state.entries;
-	if (entries.length === 0) return;
-
-	const first = entries[0];
-	if (first.kind === "dm") {
-		const dmEntries = entries as DmBufferEntry[];
-		processBufferedDmEvents(dmEntries, state.context).catch((err) => {
-			logger("inbound").error("dm flush failed", {
-				accountId: state.context.accountId,
-				err: String(err),
-			});
-		});
-	} else {
-		const groupEntries = entries as GroupBufferEntry[];
-		processBufferedGroupEvents(groupEntries, state.context).catch((err) => {
-			logger("inbound").error("group flush failed", {
-				accountId: state.context.accountId,
-				err: String(err),
-			});
-		});
-	}
-}
-
-function pushToBuffer(key: string, entry: BufferEntry, context: DebounceContext): void {
-	let state = debounceBuffers.get(key);
-	if (!state) {
-		state = {
-			entries: [],
-			timer: setTimeout(() => flushBuffer(key), DEBOUNCE_SLIDE_MS),
-			firstEventAt: Date.now(),
-			context,
-		};
-		debounceBuffers.set(key, state);
+	const msgEvent = event.event as unknown as SeaTalkMessageEvent;
+	if (!msgEvent?.employee_code || !msgEvent?.message) {
+		log.warn("malformed dm event", { accountId });
+		return;
 	}
 
-	state.entries.push(entry);
-	scheduleFlush(key, state);
+	log.info("dm received", {
+		accountId,
+		employeeCode: msgEvent.employee_code,
+		tag: msgEvent.message.tag,
+		threadId: msgEvent.message.thread_id,
+	});
+
+	await getInboundDebouncer().enqueue({
+		kind: "dm",
+		event,
+		parsedEvent: msgEvent,
+		ctx: { cfg, client, runtime, accountId },
+	});
 }
 
-async function processBufferedDmEvents(
-	entries: DmBufferEntry[],
-	context: DebounceContext,
-): Promise<void> {
-	const { cfg, client, accountId } = context;
+export async function handleSeaTalkGroupMessage(params: {
+	cfg: OpenClawConfig;
+	event: SeaTalkCallbackRequest;
+	client: SeaTalkClient;
+	runtime?: RuntimeEnv;
+	accountId: string;
+}): Promise<void> {
+	const { cfg, event, client, runtime, accountId } = params;
+	const log = logger("inbound");
+
+	if (!tryRecordEvent(`${accountId}:${event.event_id}`)) {
+		log.info("duplicate group event skipped", { accountId, eventId: event.event_id });
+		return;
+	}
+
+	const groupEvent = event.event as unknown as SeaTalkGroupMessageEvent;
+	const groupId = groupEvent?.group_id;
+	const msg = groupEvent?.message;
+	const sender = msg?.sender;
+
+	if (!groupId || !msg || !sender?.employee_code) {
+		log.warn("malformed group event", { accountId });
+		return;
+	}
+
+	if (sender.sender_type === 2) {
+		log.info("ignoring bot self message", { accountId, groupId });
+		return;
+	}
+
+	const employeeCode = sender.employee_code;
+	const senderEmail = sender.email;
+	const threadId = msg.thread_id;
+
+	log.info("group received", {
+		accountId,
+		groupId,
+		employeeCode,
+		tag: msg.tag,
+		eventType: event.event_type,
+		threadId,
+	});
+
+	const account = resolveSeaTalkAccount({ cfg, accountId });
+	const seatalkCfg = account.config;
+
+	const access = checkGroupAccess({
+		groupPolicy: seatalkCfg?.groupPolicy ?? "disabled",
+		groupAllowFrom: seatalkCfg?.groupAllowFrom,
+		groupSenderAllowFrom: seatalkCfg?.groupSenderAllowFrom,
+		groupId,
+		senderEmployeeCode: employeeCode,
+		senderEmail,
+	});
+
+	if (!access.allowed) {
+		log.warn("group access denied", {
+			accountId,
+			groupId,
+			employeeCode,
+			reason: access.reason,
+		});
+		return;
+	}
+
+	await getInboundDebouncer().enqueue({
+		kind: "group",
+		event,
+		groupEvent,
+		groupId,
+		eventType: event.event_type,
+		ctx: { cfg, client, runtime, accountId },
+	});
+}
+
+function mediaKind(media: SeaTalkMediaInfo): InboundMediaFacts["kind"] {
+	if (media.placeholder.includes("image")) return "image";
+	if (media.placeholder.includes("video")) return "video";
+	return "document";
+}
+
+function toInboundMediaFacts(mediaList: SeaTalkMediaInfo[]): InboundMediaFacts[] {
+	return mediaList.map((media) => ({
+		path: media.path,
+		contentType: media.contentType,
+		kind: mediaKind(media),
+	}));
+}
+
+function buildSeaTalkDelivery(params: {
+	client: SeaTalkClient;
+	to: string;
+	threadId?: string;
+	isGroup: boolean;
+	chunkText: (text: string, limit: number) => string[];
+	log: ReturnType<typeof logger>;
+	accountId: string;
+}): SeaTalkDelivery {
+	const { client, to, threadId, isGroup, chunkText, log, accountId } = params;
+	const sendText = (text: string) =>
+		isGroup
+			? sendGroupTextMessage(client, to, text, 1, threadId)
+			: sendTextMessage(client, to, text, 1, threadId);
+	return {
+		deliver: async (payload) => {
+			const reply = resolveSendableOutboundReplyParts(payload);
+			if (!reply.hasText && !reply.hasMedia) return;
+
+			if (reply.hasText) {
+				log.info("inline deliver", { accountId, to, threadId, kind: "text" });
+				for (const chunk of chunkText(reply.trimmedText, SEATALK_TEXT_CHUNK_LIMIT)) {
+					await sendText(chunk);
+				}
+			}
+
+			if (reply.hasMedia) {
+				log.info("inline deliver", {
+					accountId,
+					to,
+					threadId,
+					kind: "media",
+					count: reply.mediaUrls.length,
+				});
+				await deliverMediaReplies({
+					mediaUrls: reply.mediaUrls,
+					client,
+					to,
+					threadId,
+					isGroup,
+				});
+			}
+		},
+	};
+}
+
+async function dispatchSeaTalkTurn(params: {
+	ctx: TurnContext;
+	chatType: "direct" | "group";
+	peerId: string;
+	from: string;
+	to: string;
+	senderId: string;
+	senderName: string;
+	messageId: string;
+	threadId?: string;
+	wasMentioned: boolean;
+	timestampMs: number;
+	messageText: string;
+	mediaList: SeaTalkMediaInfo[];
+	useThreadSession: boolean;
+	metadata: Record<string, string>;
+}): Promise<void> {
+	const { cfg, client, accountId } = params.ctx;
+	const log = logger("inbound");
+	const core = getSeatalkRuntime();
+	const isGroup = params.chatType === "group";
+
+	const account = resolveSeaTalkAccount({ cfg, accountId });
+	const seatalkCfg = account.config;
+
+	const route = core.channel.routing.resolveAgentRoute({
+		cfg,
+		channel: "seatalk",
+		accountId,
+		peer: { kind: params.chatType, id: params.peerId },
+	});
+
+	const threadKeys = resolveThreadSessionKeys({
+		baseSessionKey: route.sessionKey,
+		threadId: params.useThreadSession ? params.threadId : undefined,
+		parentSessionKey:
+			params.useThreadSession && (seatalkCfg?.threadInheritParent ?? true)
+				? route.sessionKey
+				: undefined,
+	});
+
+	const preview = params.messageText.replace(/\s+/g, " ").slice(0, 160);
+	core.system.enqueueSystemEvent(
+		isGroup
+			? `SeaTalk[${accountId}] Group(${params.peerId}) from ${params.senderName}: ${preview}`
+			: `SeaTalk[${accountId}] DM from ${params.senderName}: ${preview}`,
+		{
+			sessionKey: threadKeys.sessionKey,
+			contextKey: isGroup
+				? `seatalk:group:${params.peerId}:${params.messageId}`
+				: `seatalk:message:${params.peerId}:${params.messageId}`,
+		},
+	);
+
+	const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
+	const envelopeBody = core.channel.reply.formatAgentEnvelope({
+		channel: "SeaTalk",
+		from: params.senderId,
+		timestamp: new Date(params.timestampMs),
+		envelope: envelopeOptions,
+		body: `${params.senderName}: ${params.messageText}`,
+	});
+
+	const ctxPayload = core.channel.inbound.buildContext({
+		channel: "seatalk",
+		accountId,
+		messageId: params.messageId,
+		timestamp: params.timestampMs,
+		from: params.from,
+		sender: { id: params.senderId, name: params.senderName },
+		conversation: {
+			kind: params.chatType,
+			id: params.peerId,
+			threadId: params.threadId,
+			routePeer: { kind: params.chatType, id: params.peerId },
+		},
+		route: {
+			agentId: route.agentId,
+			accountId: route.accountId,
+			routeSessionKey: threadKeys.sessionKey,
+			parentSessionKey: threadKeys.parentSessionKey,
+		},
+		reply: {
+			to: params.to,
+			originatingTo: params.to,
+			messageThreadId: params.threadId,
+		},
+		message: {
+			body: envelopeBody,
+			bodyForAgent: params.messageText,
+			rawBody: params.messageText,
+			commandBody: params.messageText,
+		},
+		access: {
+			commands: { authorized: true },
+			mentions: { canDetectMention: isGroup, wasMentioned: params.wasMentioned },
+		},
+		media: params.mediaList.length > 0 ? toInboundMediaFacts(params.mediaList) : undefined,
+		extra: Object.keys(params.metadata).length > 0 ? { Metadata: params.metadata } : undefined,
+	});
+
+	const processingIndicator = seatalkCfg?.processingIndicator ?? "typing";
+	const chunkText = (text: string, limit: number) =>
+		core.channel.text.chunkMarkdownText(text, limit);
+
+	const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
+		cfg,
+		agentId: route.agentId,
+		channel: "seatalk",
+		accountId,
+		typing:
+			processingIndicator === "typing"
+				? {
+						start: () =>
+							isGroup
+								? client.setGroupChatTyping(params.peerId, params.threadId)
+								: client.setSingleChatTyping(params.peerId, params.threadId),
+						onStartError: (err) =>
+							log.warn("typing failed", {
+								accountId,
+								to: params.to,
+								err: String(err),
+							}),
+						keepaliveIntervalMs: TYPING_KEEPALIVE_MS,
+						maxDurationMs: 0,
+					}
+				: undefined,
+	});
+
+	const turn: AssembledInboundReply = {
+		cfg,
+		channel: "seatalk",
+		accountId,
+		agentId: route.agentId,
+		routeSessionKey: threadKeys.sessionKey,
+		storePath: resolveStorePath(undefined, { agentId: route.agentId }),
+		ctxPayload,
+		recordInboundSession: core.channel.session.recordInboundSession,
+		dispatchReplyWithBufferedBlockDispatcher:
+			core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+		delivery: buildSeaTalkDelivery({
+			client,
+			to: params.peerId,
+			threadId: params.threadId,
+			isGroup,
+			chunkText,
+			log: logger("outbound"),
+			accountId,
+		}),
+		replyPipeline,
+		replyOptions: { onModelSelected, disableBlockStreaming: true },
+		record: {
+			onRecordError: (err) =>
+				log.warn("record session failed", { accountId, err: String(err) }),
+		},
+		messageId: params.messageId,
+	};
+
+	log.info("dispatching to agent", {
+		accountId,
+		to: params.to,
+		sessionKey: threadKeys.sessionKey,
+	});
+
+	const result = await core.channel.inbound.dispatchReply(turn);
+
+	log.info("dispatch complete", {
+		accountId,
+		to: params.to,
+		dispatched: result.dispatched,
+	});
+}
+
+async function processBufferedDmEvents(entries: DmBufferEntry[]): Promise<void> {
+	const ctx = entries[0].ctx;
+	const { cfg, client, accountId } = ctx;
 	const log = logger("inbound");
 
 	const first = entries[0].parsedEvent;
@@ -308,11 +632,7 @@ async function processBufferedDmEvents(
 			case "image":
 			case "file":
 			case "video": {
-				const media = await resolveInboundMedia({
-					message: msg,
-					client,
-					mediaAllowHosts,
-				});
+				const media = await resolveInboundMedia({ message: msg, client, mediaAllowHosts });
 				if (media) mediaList.push(media);
 				break;
 			}
@@ -349,8 +669,6 @@ async function processBufferedDmEvents(
 		}
 	}
 
-	const mediaPayload = buildSeaTalkMediaPayload(mediaList);
-
 	let messageText = textParts.join("\n");
 	if (quotedTexts.length > 0) {
 		const quotedBlock = quotedTexts.join("\n");
@@ -359,7 +677,6 @@ async function processBufferedDmEvents(
 	if (!messageText && mediaList.length > 0) {
 		messageText = mediaList.map((m) => m.placeholder).join(" ");
 	}
-
 	if (!messageText && mediaList.length === 0) {
 		log.info("dm empty, skipping", { accountId, employeeCode });
 		return;
@@ -368,308 +685,39 @@ async function processBufferedDmEvents(
 	const senderName = employeeCode + (email ? ` (${email})` : "");
 	const messageId = first.message.message_id;
 	const threadId = first.message.thread_id;
+	const eventTimestamp = entries[0].event.timestamp;
+
+	const metadata: Record<string, string> = {};
+	if (threadId) metadata.threadId = threadId;
+	const firstQuotedId = first.message.quoted_message_id;
+	if (firstQuotedId) metadata.quotedMessageId = firstQuotedId;
 
 	try {
-		const seatalkFrom = `seatalk:${employeeCode}`;
-		const seatalkTo = employeeCode;
-
-		const route = core.channel.routing.resolveAgentRoute({
-			cfg,
-			channel: "seatalk",
-			accountId,
-			peer: {
-				kind: "direct",
-				id: employeeCode,
-			},
+		await dispatchSeaTalkTurn({
+			ctx,
+			chatType: "direct",
+			peerId: employeeCode,
+			from: `seatalk:${employeeCode}`,
+			to: employeeCode,
+			senderId: employeeCode,
+			senderName,
+			messageId,
+			threadId,
+			wasMentioned: false,
+			timestampMs: eventTimestamp ? eventTimestamp * 1000 : Date.now(),
+			messageText,
+			mediaList,
+			useThreadSession: (seatalkCfg?.dmThreadSession ?? true) && Boolean(threadId),
+			metadata,
 		});
-
-		const useThreadSession = (seatalkCfg?.dmThreadSession ?? true) && Boolean(threadId);
-		const threadKeys = resolveThreadSessionKeys({
-			baseSessionKey: route.sessionKey,
-			threadId: useThreadSession ? threadId : undefined,
-			parentSessionKey:
-				useThreadSession && (seatalkCfg?.threadInheritParent ?? true)
-					? route.sessionKey
-					: undefined,
-		});
-
-		const preview = messageText.replace(/\s+/g, " ").slice(0, 160);
-		core.system.enqueueSystemEvent(`SeaTalk[${accountId}] DM from ${senderName}: ${preview}`, {
-			sessionKey: threadKeys.sessionKey,
-			contextKey: `seatalk:message:${employeeCode}:${messageId}`,
-		});
-
-		const eventTimestamp = entries[0].event.timestamp;
-		const messageTimestamp = eventTimestamp ? new Date(eventTimestamp * 1000) : new Date();
-
-		const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
-		const bodyForAgent = `${senderName}: ${messageText}`;
-
-		const body = core.channel.reply.formatAgentEnvelope({
-			channel: "SeaTalk",
-			from: employeeCode,
-			timestamp: messageTimestamp,
-			envelope: envelopeOptions,
-			body: bodyForAgent,
-		});
-
-		const metadata: Record<string, string> = {};
-		if (threadId) metadata.threadId = threadId;
-		const firstQuotedId = first.message.quoted_message_id;
-		if (firstQuotedId) metadata.quotedMessageId = firstQuotedId;
-
-		const ctxPayload = core.channel.reply.finalizeInboundContext({
-			Body: body,
-			BodyForAgent: messageText,
-			RawBody: messageText,
-			CommandBody: messageText,
-			From: seatalkFrom,
-			To: seatalkTo,
-			SessionKey: threadKeys.sessionKey,
-			ParentSessionKey: threadKeys.parentSessionKey,
-			AccountId: route.accountId,
-			ChatType: "direct" as const,
-			SenderName: senderName,
-			SenderId: employeeCode,
-			Provider: "seatalk" as const,
-			Surface: "seatalk" as const,
-			MessageSid: messageId,
-			MessageThreadId: threadId || undefined,
-			Timestamp: eventTimestamp ? eventTimestamp * 1000 : Date.now(),
-			WasMentioned: false,
-			CommandAuthorized: true,
-			OriginatingChannel: "seatalk" as const,
-			OriginatingTo: seatalkTo,
-			...(Object.keys(metadata).length > 0 ? { Metadata: metadata } : {}),
-			...mediaPayload,
-		});
-
-		const processingIndicator = account.config?.processingIndicator ?? "typing";
-		if (processingIndicator === "typing") {
-			client
-				.setSingleChatTyping(employeeCode, threadId)
-				.catch((err) =>
-					log.warn("dm typing failed", { accountId, employeeCode, err: String(err) }),
-				);
-		}
-
-		const coalescingEnabled = seatalkCfg?.outboundCoalescing !== false;
-		const sendDmText = (text: string) =>
-			sendTextMessage(client, employeeCode, text, 1, threadId);
-		const chunkText = (text: string, limit: number) =>
-			core.channel.text.chunkMarkdownText(text, limit);
-		const coalescer = coalescingEnabled
-			? createOutboundCoalescer({
-					send: sendDmText,
-					chunkText,
-					maxLength: SEATALK_TEXT_CHUNK_LIMIT,
-					joiner: "\n\n",
-					idleFlushMs: OUTBOUND_COALESCE_IDLE_MS,
-				})
-			: null;
-
-		const out = logger("outbound");
-		const typingResult = core.channel.reply.createReplyDispatcherWithTyping({
-			humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
-			deliver: async (payload) => {
-				const reply = resolveSendableOutboundReplyParts(payload);
-				if (!reply.hasText && !reply.hasMedia) return;
-
-				if (reply.hasText) {
-					out.info("dm inline deliver", {
-						accountId,
-						employeeCode,
-						threadId,
-						kind: "text",
-					});
-					if (coalescer) {
-						coalescer.append(reply.trimmedText);
-					} else {
-						const chunks = chunkText(reply.trimmedText, SEATALK_TEXT_CHUNK_LIMIT);
-						for (const chunk of chunks) {
-							await sendDmText(chunk);
-						}
-					}
-				}
-
-				if (reply.hasMedia) {
-					out.info("dm inline deliver", {
-						accountId,
-						employeeCode,
-						threadId,
-						kind: "media",
-						count: reply.mediaUrls.length,
-					});
-					if (coalescer) await coalescer.flush();
-					await deliverMediaReplies({
-						mediaUrls: reply.mediaUrls,
-						client,
-						to: employeeCode,
-						threadId,
-						isGroup: false,
-					});
-				}
-			},
-			onError: (err) => {
-				out.error("dm reply delivery failed", {
-					accountId,
-					employeeCode,
-					err: String(err),
-				});
-			},
-		});
-
-		const replyOptions = {
-			agentId: route.agentId,
-			...typingResult.replyOptions,
-		};
-
-		log.info("dm dispatching to agent", {
-			accountId,
-			employeeCode,
-			sessionKey: threadKeys.sessionKey,
-		});
-
-		try {
-			const { queuedFinal, counts } = await core.channel.reply.dispatchReplyFromConfig({
-				ctx: ctxPayload,
-				cfg,
-				dispatcher: typingResult.dispatcher,
-				replyOptions,
-			});
-
-			log.info("dm dispatch complete", {
-				accountId,
-				employeeCode,
-				queuedFinal,
-				counts,
-			});
-		} finally {
-			typingResult.markDispatchIdle();
-			if (coalescer) {
-				await typingResult.dispatcher.waitForIdle();
-				await coalescer.flush();
-			}
-		}
 	} catch (err) {
 		log.error("dm dispatch failed", { accountId, employeeCode, err: String(err) });
 	}
 }
 
-export async function handleSeaTalkMessage(params: {
-	cfg: OpenClawConfig;
-	event: SeaTalkCallbackRequest;
-	client: SeaTalkClient;
-	runtime?: RuntimeEnv;
-	accountId: string;
-}): Promise<void> {
-	const { cfg, event, client, runtime, accountId } = params;
-	const log = logger("inbound");
-
-	if (!tryRecordEvent(`${accountId}:${event.event_id}`)) {
-		log.info("duplicate event skipped", { accountId, eventId: event.event_id });
-		return;
-	}
-
-	const msgEvent = event.event as unknown as SeaTalkMessageEvent;
-	if (!msgEvent?.employee_code || !msgEvent?.message) {
-		log.warn("malformed dm event", { accountId });
-		return;
-	}
-
-	log.info("dm received", {
-		accountId,
-		employeeCode: msgEvent.employee_code,
-		tag: msgEvent.message.tag,
-		threadId: msgEvent.message.thread_id,
-	});
-
-	const key = dmDebounceKey(accountId, msgEvent.employee_code, msgEvent.message.thread_id);
-	pushToBuffer(
-		key,
-		{ kind: "dm", event, parsedEvent: msgEvent },
-		{ cfg, client, runtime, accountId },
-	);
-}
-
-export async function handleSeaTalkGroupMessage(params: {
-	cfg: OpenClawConfig;
-	event: SeaTalkCallbackRequest;
-	client: SeaTalkClient;
-	runtime?: RuntimeEnv;
-	accountId: string;
-}): Promise<void> {
-	const { cfg, event, client, runtime, accountId } = params;
-	const log = logger("inbound");
-
-	if (!tryRecordEvent(`${accountId}:${event.event_id}`)) {
-		log.info("duplicate group event skipped", { accountId, eventId: event.event_id });
-		return;
-	}
-
-	const groupEvent = event.event as unknown as SeaTalkGroupMessageEvent;
-	const groupId = groupEvent?.group_id;
-	const msg = groupEvent?.message;
-	const sender = msg?.sender;
-
-	if (!groupId || !msg || !sender?.employee_code) {
-		log.warn("malformed group event", { accountId });
-		return;
-	}
-
-	if (sender.sender_type === 2) {
-		log.info("ignoring bot self message", { accountId, groupId });
-		return;
-	}
-
-	const employeeCode = sender.employee_code;
-	const senderEmail = sender.email;
-	const threadId = msg.thread_id;
-
-	log.info("group received", {
-		accountId,
-		groupId,
-		employeeCode,
-		tag: msg.tag,
-		eventType: event.event_type,
-		threadId,
-	});
-
-	const account = resolveSeaTalkAccount({ cfg, accountId });
-	const seatalkCfg = account.config;
-
-	const access = checkGroupAccess({
-		groupPolicy: seatalkCfg?.groupPolicy ?? "disabled",
-		groupAllowFrom: seatalkCfg?.groupAllowFrom,
-		groupSenderAllowFrom: seatalkCfg?.groupSenderAllowFrom,
-		groupId,
-		senderEmployeeCode: employeeCode,
-		senderEmail,
-	});
-
-	if (!access.allowed) {
-		log.warn("group access denied", {
-			accountId,
-			groupId,
-			employeeCode,
-			reason: access.reason,
-		});
-		return;
-	}
-
-	const key = groupDebounceKey(accountId, groupId, employeeCode, threadId);
-	pushToBuffer(
-		key,
-		{ kind: "group", event, groupEvent, groupId, eventType: event.event_type },
-		{ cfg, client, runtime, accountId },
-	);
-}
-
-async function processBufferedGroupEvents(
-	entries: GroupBufferEntry[],
-	context: DebounceContext,
-): Promise<void> {
-	const { cfg, client, accountId } = context;
+async function processBufferedGroupEvents(entries: GroupBufferEntry[]): Promise<void> {
+	const ctx = entries[0].ctx;
+	const { cfg, client, accountId } = ctx;
 	const log = logger("inbound");
 
 	const first = entries[0];
@@ -698,11 +746,7 @@ async function processBufferedGroupEvents(
 			case "image":
 			case "file":
 			case "video": {
-				const media = await resolveInboundMedia({
-					message: m,
-					client,
-					mediaAllowHosts,
-				});
+				const media = await resolveInboundMedia({ message: m, client, mediaAllowHosts });
 				if (media) mediaList.push(media);
 				break;
 			}
@@ -736,8 +780,6 @@ async function processBufferedGroupEvents(
 		}
 	}
 
-	const mediaPayload = buildSeaTalkMediaPayload(mediaList);
-
 	let messageText = textParts.join("\n");
 	if (quotedText) {
 		messageText = messageText ? `${quotedText}\n${messageText}` : quotedText;
@@ -755,186 +797,30 @@ async function processBufferedGroupEvents(
 	const wasMentioned = entries.some(
 		(e) => e.eventType === "new_mentioned_message_received_from_group_chat",
 	);
+	const sentAt = first.groupEvent.message.message_sent_time;
+
+	const metadata: Record<string, string> = { groupId };
+	if (threadId) metadata.threadId = threadId;
+	if (quotedMessageId) metadata.quotedMessageId = quotedMessageId;
 
 	try {
-		const core = getSeatalkRuntime();
-
-		const route = core.channel.routing.resolveAgentRoute({
-			cfg,
-			channel: "seatalk",
-			accountId,
-			peer: {
-				kind: "group",
-				id: groupId,
-			},
+		await dispatchSeaTalkTurn({
+			ctx,
+			chatType: "group",
+			peerId: groupId,
+			from: `seatalk:${employeeCode}`,
+			to: groupId,
+			senderId: employeeCode,
+			senderName,
+			messageId,
+			threadId,
+			wasMentioned,
+			timestampMs: sentAt ? sentAt * 1000 : Date.now(),
+			messageText,
+			mediaList,
+			useThreadSession: (seatalkCfg?.groupThreadSession ?? true) && Boolean(threadId),
+			metadata,
 		});
-
-		const useThreadSession = (seatalkCfg?.groupThreadSession ?? true) && Boolean(threadId);
-		const threadKeys = resolveThreadSessionKeys({
-			baseSessionKey: route.sessionKey,
-			threadId: useThreadSession ? threadId : undefined,
-			parentSessionKey:
-				useThreadSession && (seatalkCfg?.threadInheritParent ?? true)
-					? route.sessionKey
-					: undefined,
-		});
-
-		const preview = messageText.replace(/\s+/g, " ").slice(0, 160);
-		core.system.enqueueSystemEvent(
-			`SeaTalk[${accountId}] Group(${groupId}) from ${senderName}: ${preview}`,
-			{
-				sessionKey: threadKeys.sessionKey,
-				contextKey: `seatalk:group:${groupId}:${messageId}`,
-			},
-		);
-
-		const sentAt = first.groupEvent.message.message_sent_time;
-		const messageTimestamp = sentAt ? new Date(sentAt * 1000) : new Date();
-
-		const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
-		const body = core.channel.reply.formatAgentEnvelope({
-			channel: "SeaTalk",
-			from: employeeCode,
-			timestamp: messageTimestamp,
-			envelope: envelopeOptions,
-			body: `${senderName}: ${messageText}`,
-		});
-
-		const metadata: Record<string, string> = { groupId };
-		if (threadId) metadata.threadId = threadId;
-		if (quotedMessageId) metadata.quotedMessageId = quotedMessageId;
-
-		const ctxPayload = core.channel.reply.finalizeInboundContext({
-			Body: body,
-			BodyForAgent: messageText,
-			RawBody: messageText,
-			CommandBody: messageText,
-			From: `seatalk:${employeeCode}`,
-			To: `group:${groupId}`,
-			SessionKey: threadKeys.sessionKey,
-			ParentSessionKey: threadKeys.parentSessionKey,
-			AccountId: route.accountId,
-			ChatType: "group" as const,
-			SenderName: senderName,
-			SenderId: employeeCode,
-			Provider: "seatalk" as const,
-			Surface: "seatalk" as const,
-			MessageSid: messageId,
-			MessageThreadId: threadId || undefined,
-			Timestamp: sentAt ? sentAt * 1000 : Date.now(),
-			WasMentioned: wasMentioned,
-			CommandAuthorized: true,
-			OriginatingChannel: "seatalk" as const,
-			OriginatingTo: `group:${groupId}`,
-			Metadata: metadata,
-			...mediaPayload,
-		});
-
-		const processingIndicator = seatalkCfg?.processingIndicator ?? "typing";
-		if (processingIndicator === "typing") {
-			client
-				.setGroupChatTyping(groupId, threadId)
-				.catch((err) =>
-					log.warn("group typing failed", { accountId, groupId, err: String(err) }),
-				);
-		}
-
-		const replyThreadId = threadId || undefined;
-
-		const groupCoalescingEnabled = seatalkCfg?.outboundCoalescing !== false;
-		const sendGroupText = (text: string) =>
-			sendGroupTextMessage(client, groupId, text, 1, replyThreadId);
-		const chunkGroupText = (text: string, limit: number) =>
-			core.channel.text.chunkMarkdownText(text, limit);
-		const groupCoalescer = groupCoalescingEnabled
-			? createOutboundCoalescer({
-					send: sendGroupText,
-					chunkText: chunkGroupText,
-					maxLength: SEATALK_TEXT_CHUNK_LIMIT,
-					joiner: "\n\n",
-					idleFlushMs: OUTBOUND_COALESCE_IDLE_MS,
-				})
-			: null;
-
-		const out = logger("outbound");
-		const typingResult = core.channel.reply.createReplyDispatcherWithTyping({
-			humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
-			deliver: async (payload) => {
-				const reply = resolveSendableOutboundReplyParts(payload);
-				if (!reply.hasText && !reply.hasMedia) return;
-
-				if (reply.hasText) {
-					out.info("group inline deliver", {
-						accountId,
-						groupId,
-						threadId: replyThreadId,
-						kind: "text",
-					});
-					if (groupCoalescer) {
-						groupCoalescer.append(reply.trimmedText);
-					} else {
-						const chunks = chunkGroupText(reply.trimmedText, SEATALK_TEXT_CHUNK_LIMIT);
-						for (const chunk of chunks) {
-							await sendGroupText(chunk);
-						}
-					}
-				}
-
-				if (reply.hasMedia) {
-					out.info("group inline deliver", {
-						accountId,
-						groupId,
-						threadId: replyThreadId,
-						kind: "media",
-						count: reply.mediaUrls.length,
-					});
-					if (groupCoalescer) await groupCoalescer.flush();
-					await deliverMediaReplies({
-						mediaUrls: reply.mediaUrls,
-						client,
-						to: groupId,
-						threadId: replyThreadId,
-						isGroup: true,
-					});
-				}
-			},
-			onError: (err) => {
-				out.error("group reply delivery failed", { accountId, groupId, err: String(err) });
-			},
-		});
-
-		const replyOptions = {
-			agentId: route.agentId,
-			...typingResult.replyOptions,
-		};
-
-		log.info("group dispatching to agent", {
-			accountId,
-			groupId,
-			sessionKey: threadKeys.sessionKey,
-		});
-
-		try {
-			const { queuedFinal, counts } = await core.channel.reply.dispatchReplyFromConfig({
-				ctx: ctxPayload,
-				cfg,
-				dispatcher: typingResult.dispatcher,
-				replyOptions,
-			});
-
-			log.info("group dispatch complete", {
-				accountId,
-				groupId,
-				queuedFinal,
-				counts,
-			});
-		} finally {
-			typingResult.markDispatchIdle();
-			if (groupCoalescer) {
-				await typingResult.dispatcher.waitForIdle();
-				await groupCoalescer.flush();
-			}
-		}
 	} catch (err) {
 		log.error("group dispatch failed", { accountId, groupId, err: String(err) });
 	}

@@ -204,24 +204,3 @@ export async function prepareOutboundMedia(mediaUrl: string): Promise<SeaTalkOut
 		filename: sendAs === "file" ? detectedName.slice(0, 100) : undefined,
 	};
 }
-
-export function buildSeaTalkMediaPayload(mediaList: SeaTalkMediaInfo[]): {
-	MediaPath?: string;
-	MediaType?: string;
-	MediaUrl?: string;
-	MediaPaths?: string[];
-	MediaUrls?: string[];
-	MediaTypes?: string[];
-} {
-	const first = mediaList[0];
-	const mediaPaths = mediaList.map((m) => m.path);
-	const mediaTypes = mediaList.map((m) => m.contentType).filter(Boolean) as string[];
-	return {
-		MediaPath: first?.path,
-		MediaType: first?.contentType,
-		MediaUrl: first?.path,
-		MediaPaths: mediaPaths.length > 0 ? mediaPaths : undefined,
-		MediaUrls: mediaPaths.length > 0 ? mediaPaths : undefined,
-		MediaTypes: mediaTypes.length > 0 ? mediaTypes : undefined,
-	};
-}

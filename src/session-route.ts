@@ -4,7 +4,7 @@ import {
 	buildThreadAwareOutboundSessionRoute,
 	stripChannelTargetPrefix,
 } from "openclaw/plugin-sdk/core";
-import { isGroupTarget, parseGroupTarget } from "./targets.js";
+import { resolveSeaTalkTargetKind } from "./targets.js";
 
 export function resolveSeaTalkOutboundSessionRoute(params: ChannelOutboundSessionRouteParams) {
 	const trimmed = stripChannelTargetPrefix(params.target, "seatalk");
@@ -12,8 +12,7 @@ export function resolveSeaTalkOutboundSessionRoute(params: ChannelOutboundSessio
 		return null;
 	}
 
-	const isGroup = isGroupTarget(trimmed);
-	const id = isGroup ? parseGroupTarget(trimmed) : trimmed;
+	const { kind, id } = resolveSeaTalkTargetKind(trimmed);
 	if (!id) {
 		return null;
 	}
@@ -23,10 +22,10 @@ export function resolveSeaTalkOutboundSessionRoute(params: ChannelOutboundSessio
 		agentId: params.agentId,
 		channel: "seatalk",
 		accountId: params.accountId,
-		peer: { kind: isGroup ? "group" : "direct", id },
-		chatType: isGroup ? "group" : "direct",
-		from: isGroup ? `seatalk:group:${id}` : `seatalk:${id}`,
-		to: isGroup ? `group:${id}` : id,
+		peer: { kind, id },
+		chatType: kind,
+		from: `seatalk:${id}`,
+		to: id,
 	});
 
 	return buildThreadAwareOutboundSessionRoute({

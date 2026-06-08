@@ -1,10 +1,11 @@
 import { createPairingPrefixStripper } from "openclaw/plugin-sdk/channel-pairing";
+import { PAIRING_APPROVED_MESSAGE } from "openclaw/plugin-sdk/channel-plugin-common";
 import {
 	type ChannelPlugin,
 	type OpenClawConfig,
 	buildChannelConfigSchema,
 } from "openclaw/plugin-sdk/core";
-import { DEFAULT_ACCOUNT_ID, PAIRING_APPROVED_MESSAGE } from "openclaw/plugin-sdk/core";
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/core";
 import {
 	listSeaTalkAccountIds,
 	resolveDefaultSeaTalkAccountId,

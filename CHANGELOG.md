@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+
+- Fix every reply spawning a new per-message thread session.
+- Resolve `media://` store URIs on outbound media sends.
+
 ## 1.0.0
 
 - Require OpenClaw 2026.6.1 or newer.

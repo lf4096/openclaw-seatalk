@@ -30,9 +30,9 @@ export function resolveSeaTalkOutboundSessionRoute(params: ChannelOutboundSessio
 
 	return buildThreadAwareOutboundSessionRoute({
 		route: baseRoute,
-		replyToId: params.replyToId,
 		threadId: params.threadId,
 		currentSessionKey: params.currentSessionKey,
+		precedence: ["threadId", "currentSession"],
 		canRecoverCurrentThread: ({ route }) =>
 			route.chatType !== "direct" || (params.cfg.session?.dmScope ?? "main") !== "main",
 	});

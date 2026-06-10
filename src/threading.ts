@@ -22,7 +22,6 @@ export function buildSeaTalkThreadingToolContext(params: {
 	return {
 		currentChannelId,
 		currentThreadTs: threadId,
-		replyToMode: "all",
 		hasRepliedRef: params.hasRepliedRef,
 	};
 }

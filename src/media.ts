@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { resolveMediaBufferPath } from "openclaw/plugin-sdk/media-store";
 import type { SeaTalkClient } from "./client.js";
 import { logger } from "./log.js";
 import { getSeatalkRuntime } from "./runtime.js";
@@ -156,11 +157,26 @@ async function fetchRemoteMedia(url: string): Promise<{ buffer: Buffer; name: st
 	}
 }
 
-function readLocalMedia(mediaUrl: string): { buffer: Buffer; name: string } {
-	const resolved = mediaUrl.startsWith("~")
+// Gateway claim-check offload hands the agent opaque `media://<subdir>/<id>` URIs for inbound
+// attachments. The agent echoes them back on sends, so resolve them through the media store
+// (which also guards against path traversal) instead of treating the URI as a literal path.
+const MEDIA_STORE_URI_RE = /^media:\/\/([\w-]+)\/([^/]+)$/i;
+
+async function resolveLocalMediaPath(mediaUrl: string): Promise<string> {
+	const storeRef = MEDIA_STORE_URI_RE.exec(mediaUrl);
+	if (storeRef) {
+		try {
+			return await resolveMediaBufferPath(storeRef[2], storeRef[1]);
+		} catch {
+			throw new Error(`Media file not found: ${mediaUrl}`);
+		}
+	}
+	return mediaUrl.startsWith("~")
 		? path.join(os.homedir(), mediaUrl.slice(1))
 		: mediaUrl.replace(/^file:\/\//, "");
+}
 
+function readLocalMedia(resolved: string): { buffer: Buffer; name: string } {
 	if (!fs.existsSync(resolved)) {
 		throw new Error(`Media file not found: ${resolved}`);
 	}
@@ -186,7 +202,7 @@ export async function prepareOutboundMedia(mediaUrl: string): Promise<SeaTalkOut
 	const isRemote = mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://");
 	const { buffer, name: detectedName } = isRemote
 		? await fetchRemoteMedia(mediaUrl)
-		: readLocalMedia(mediaUrl);
+		: readLocalMedia(await resolveLocalMediaPath(mediaUrl));
 
 	if (buffer.length > MAX_OUTBOUND_RAW_BYTES) {
 		throw new Error(

@@ -63,7 +63,7 @@ async function connectSingleAccount(params: {
 				}
 
 				log.info("connecting", { accountId, relayUrl });
-				const ws = new WebSocket(relayUrl);
+				const ws = new WebSocket(relayUrl, { handshakeTimeout: 15_000 });
 
 				let staleTimer: ReturnType<typeof setTimeout> | undefined;
 				const clearStaleTimer = () => {
@@ -217,9 +217,9 @@ export async function connectSeaTalkRelay(
 		});
 	}
 
-	const accounts = listEnabledSeaTalkAccounts(cfg);
+	const accounts = listEnabledSeaTalkAccounts(cfg).filter((a) => a.mode === "relay");
 	if (accounts.length === 0) {
-		throw new Error("No enabled SeaTalk accounts configured");
+		throw new Error("No enabled SeaTalk relay-mode accounts configured");
 	}
 
 	log.info("connecting accounts", {

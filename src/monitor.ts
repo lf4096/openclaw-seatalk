@@ -188,9 +188,9 @@ export async function monitorSeaTalkProvider(opts: MonitorSeaTalkOpts = {}): Pro
 		});
 	}
 
-	const accounts = listEnabledSeaTalkAccounts(cfg);
+	const accounts = listEnabledSeaTalkAccounts(cfg).filter((a) => a.mode === "webhook");
 	if (accounts.length === 0) {
-		throw new Error("No enabled SeaTalk accounts configured");
+		throw new Error("No enabled SeaTalk webhook-mode accounts configured");
 	}
 
 	log.info("starting accounts", {

@@ -72,15 +72,23 @@ export function resolveSeaTalkAccount(params: {
 	const merged = mergeSeaTalkAccountConfig(params.cfg, accountId);
 	const accountEnabled = merged.enabled !== false;
 	const enabled = baseEnabled && accountEnabled;
-	const creds = resolveSeaTalkCredentials(merged);
+
+	const mode = merged.mode ?? "webhook";
+	const appId = merged.appId?.trim() || undefined;
+	const appSecret = merged.appSecret?.trim() || undefined;
+	const signingSecret = merged.signingSecret?.trim() || undefined;
+	// WebSocket mode authenticates with app_id + app_secret only. Webhook verifies the HMAC
+	// Signature header locally and relay hands the secret to the relay service for the same
+	// check, so both need the signing secret.
+	const configured = Boolean(appId && appSecret && (mode === "websocket" || signingSecret));
 
 	return {
 		accountId,
 		enabled,
-		configured: Boolean(creds),
-		appId: creds?.appId,
-		appSecret: creds?.appSecret,
-		mode: merged.mode ?? "webhook",
+		configured,
+		appId,
+		appSecret,
+		mode,
 		relayUrl: merged.relayUrl,
 		webhookPort: merged.webhookPort ?? 8080,
 		webhookPath: merged.webhookPath ?? "/callback",

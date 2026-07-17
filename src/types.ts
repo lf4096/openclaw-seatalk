@@ -9,7 +9,7 @@ export type SeaTalkConfig = z.infer<typeof SeaTalkConfigSchema>;
 export type SeaTalkAccountConfig = z.infer<typeof SeaTalkAccountConfigSchema>;
 export type SeaTalkToolsConfig = z.infer<typeof SeaTalkToolsConfigSchema>;
 
-export type GatewayMode = "webhook" | "relay";
+export type GatewayMode = "webhook" | "relay" | "websocket";
 
 export type ResolvedSeaTalkAccount = {
 	accountId: string;

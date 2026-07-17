@@ -2,7 +2,7 @@ import { z } from "zod";
 export { z };
 
 const DmPolicySchema = z.enum(["open", "allowlist", "pairing"]);
-const GatewayModeSchema = z.enum(["webhook", "relay"]);
+const GatewayModeSchema = z.enum(["webhook", "relay", "websocket"]);
 const GroupPolicySchema = z.enum(["disabled", "allowlist", "open"]);
 const ProcessingIndicatorSchema = z.enum(["typing", "off"]);
 

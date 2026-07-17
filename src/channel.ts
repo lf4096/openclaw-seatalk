@@ -132,7 +132,9 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 			mode: account.mode,
 			...(account.mode === "relay"
 				? { relayUrl: account.relayUrl }
-				: { webhookPort: account.webhookPort }),
+				: account.mode === "websocket"
+					? {}
+					: { webhookPort: account.webhookPort }),
 		}),
 		resolveAllowFrom: ({ cfg, accountId }) => {
 			const account = resolveSeaTalkAccount({ cfg, accountId });
@@ -279,7 +281,9 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 			mode: account.mode,
 			...(account.mode === "relay"
 				? { relayUrl: account.relayUrl }
-				: { webhookPort: account.webhookPort }),
+				: account.mode === "websocket"
+					? {}
+					: { webhookPort: account.webhookPort }),
 			running: runtime?.running ?? false,
 			lastStartAt: runtime?.lastStartAt ?? null,
 			lastStopAt: runtime?.lastStopAt ?? null,
@@ -292,6 +296,18 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 		startAccount: async (ctx) => {
 			const account = resolveSeaTalkAccount({ cfg: ctx.cfg, accountId: ctx.accountId });
 			const mode = account.mode;
+
+			if (mode === "websocket") {
+				ctx.setStatus({ accountId: ctx.accountId, mode: "websocket" });
+				ctx.log?.info(`starting seatalk[${ctx.accountId}] (official websocket client)`);
+				const { connectSeaTalkWebSocket } = await import("./ws-client.js");
+				return connectSeaTalkWebSocket({
+					config: ctx.cfg,
+					runtime: ctx.runtime,
+					abortSignal: ctx.abortSignal,
+					accountId: ctx.accountId,
+				});
+			}
 
 			if (mode === "relay") {
 				if (!account.relayUrl) {

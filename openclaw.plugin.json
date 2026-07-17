@@ -1,5 +1,6 @@
 {
 	"id": "openclaw-seatalk",
+	"name": "SeaTalk",
 	"channels": ["seatalk"],
 	"contracts": {
 		"tools": ["seatalk"]
@@ -21,7 +22,7 @@
 					"appId": { "type": "string" },
 					"appSecret": { "type": "string" },
 					"signingSecret": { "type": "string" },
-					"mode": { "type": "string", "enum": ["webhook", "relay"] },
+					"mode": { "type": "string", "enum": ["webhook", "relay", "websocket"] },
 					"relayUrl": { "type": "string" },
 					"webhookPort": { "type": "integer", "minimum": 1 },
 					"webhookPath": { "type": "string" },
@@ -55,7 +56,10 @@
 								"appId": { "type": "string" },
 								"appSecret": { "type": "string" },
 								"signingSecret": { "type": "string" },
-								"mode": { "type": "string", "enum": ["webhook", "relay"] },
+								"mode": {
+									"type": "string",
+									"enum": ["webhook", "relay", "websocket"]
+								},
 								"relayUrl": { "type": "string" },
 								"webhookPort": { "type": "integer", "minimum": 1 },
 								"webhookPath": { "type": "string" },

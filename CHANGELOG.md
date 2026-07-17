@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+
+- Add official SeaTalk WebSocket event mode (`mode: "websocket"`).
+- Add the plugin manifest display name and `install.clawhubSpec` so the ClawHub Plugin Inspector validates without warnings.
+
 ## 1.0.1
 
 - Fix every reply spawning a new per-message thread session.

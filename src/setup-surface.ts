@@ -7,7 +7,7 @@ import {
 	createTopLevelChannelDmPolicy,
 	mergeAllowFromEntries,
 } from "openclaw/plugin-sdk/setup";
-import { resolveSeaTalkCredentials } from "./accounts.js";
+import { resolveSeaTalkAccount } from "./accounts.js";
 import { probeSeaTalk } from "./probe.js";
 import type { SeaTalkConfig } from "./types.js";
 
@@ -79,6 +79,7 @@ const seatalkDmPolicy: ChannelSetupDmPolicy = createTopLevelChannelDmPolicy({
 
 async function promptCredentials(
 	prompter: Parameters<NonNullable<ChannelSetupWizard["finalize"]>>[0]["prompter"],
+	requireSigningSecret: boolean,
 ): Promise<{ appId: string; appSecret: string; signingSecret: string }> {
 	const appId = String(
 		await prompter.text({
@@ -92,27 +93,32 @@ async function promptCredentials(
 			validate: (value) => (value?.trim() ? undefined : "Required"),
 		}),
 	).trim();
-	const signingSecret = String(
-		await prompter.text({
-			message: "Enter SeaTalk Signing Secret",
-			validate: (value) => (value?.trim() ? undefined : "Required"),
-		}),
-	).trim();
+	// WebSocket mode has no HMAC callback to verify, so the signing secret is not needed.
+	const signingSecret = requireSigningSecret
+		? String(
+				await prompter.text({
+					message: "Enter SeaTalk Signing Secret",
+					validate: (value) => (value?.trim() ? undefined : "Required"),
+				}),
+			).trim()
+		: "";
 	return { appId, appSecret, signingSecret };
 }
 
 async function noteSeaTalkCredentialHelp(
 	prompter: Parameters<NonNullable<ChannelSetupWizard["finalize"]>>[0]["prompter"],
+	requireSigningSecret: boolean,
 ): Promise<void> {
+	const steps = [
+		"Go to SeaTalk Open Platform (open.seatalk.io)",
+		"Create a Bot App",
+		"Get App ID and App Secret from Basic Info & Credentials",
+		...(requireSigningSecret ? ["Get Signing Secret from Event Callback settings"] : []),
+		"Enable Bot capability and set status to Online",
+		'Enable "Send Message to Bot User" permission',
+	];
 	await prompter.note(
-		[
-			"1) Go to SeaTalk Open Platform (open.seatalk.io)",
-			"2) Create a Bot App",
-			"3) Get App ID and App Secret from Basic Info & Credentials",
-			"4) Get Signing Secret from Event Callback settings",
-			"5) Enable Bot capability and set status to Online",
-			'6) Enable "Send Message to Bot User" permission',
-		].join("\n"),
+		steps.map((step, i) => `${i + 1}) ${step}`).join("\n"),
 		"SeaTalk credentials",
 	);
 }
@@ -127,28 +133,46 @@ export const seatalkSetupWizard: ChannelSetupWizard = {
 		unconfiguredHint: "needs app creds",
 		configuredScore: 2,
 		unconfiguredScore: 0,
-		resolveConfigured: ({ cfg }) => {
-			const seatalkCfg = cfg.channels?.seatalk as SeaTalkConfig | undefined;
-			return Boolean(resolveSeaTalkCredentials(seatalkCfg));
-		},
+		resolveConfigured: ({ cfg }) => resolveSeaTalkAccount({ cfg }).configured,
 	}),
 	credentials: [],
 	finalize: async ({ cfg, prompter, forceAllowFrom }) => {
 		let next = cfg;
 		const seatalkCfg = next.channels?.seatalk as SeaTalkConfig | undefined;
-		const resolved = resolveSeaTalkCredentials(seatalkCfg);
+
+		// Ask the transport mode first so credential prompts can be mode-aware
+		// (websocket authenticates with app_id + app_secret only, no signing secret).
+		const currentMode = seatalkCfg?.mode ?? "webhook";
+		const modeChoice = await prompter.select({
+			message: "Gateway mode",
+			options: [
+				{
+					value: "webhook",
+					label: "Webhook — receive event callbacks on a public URL (default)",
+				},
+				{ value: "relay", label: "Relay — connect to a relay service as client" },
+				{
+					value: "websocket",
+					label: "WebSocket — official SeaTalk direct connection (no public URL)",
+				},
+			],
+			initialValue: currentMode,
+		});
+		const mode = String(modeChoice) as "webhook" | "relay" | "websocket";
+		const requireSigningSecret = mode !== "websocket";
+
 		const hasConfigCreds = Boolean(
 			seatalkCfg?.appId?.trim() &&
 				seatalkCfg?.appSecret?.trim() &&
-				seatalkCfg?.signingSecret?.trim(),
+				(!requireSigningSecret || seatalkCfg?.signingSecret?.trim()),
 		);
 
 		let appId: string | null = null;
 		let appSecret: string | null = null;
 		let signingSecret: string | null = null;
 
-		if (!resolved) {
-			await noteSeaTalkCredentialHelp(prompter);
+		if (!hasConfigCreds) {
+			await noteSeaTalkCredentialHelp(prompter, requireSigningSecret);
 		}
 
 		if (hasConfigCreds) {
@@ -157,25 +181,38 @@ export const seatalkSetupWizard: ChannelSetupWizard = {
 				initialValue: true,
 			});
 			if (!keep) {
-				({ appId, appSecret, signingSecret } = await promptCredentials(prompter));
+				({ appId, appSecret, signingSecret } = await promptCredentials(
+					prompter,
+					requireSigningSecret,
+				));
 			}
 		} else {
-			({ appId, appSecret, signingSecret } = await promptCredentials(prompter));
+			({ appId, appSecret, signingSecret } = await promptCredentials(
+				prompter,
+				requireSigningSecret,
+			));
 		}
 
-		if (appId && appSecret && signingSecret) {
+		if (appId && appSecret) {
+			const seatalkNext: Record<string, unknown> = {
+				...next.channels?.seatalk,
+				enabled: true,
+				appId,
+				appSecret,
+				dmPolicy: seatalkCfg?.dmPolicy ?? "allowlist",
+			};
+			if (signingSecret) {
+				seatalkNext.signingSecret = signingSecret;
+			} else {
+				// New credentials without a signing secret (websocket mode): drop the old
+				// app's secret instead of silently pairing it with the replacement app.
+				seatalkNext.signingSecret = undefined;
+			}
 			next = {
 				...next,
 				channels: {
 					...next.channels,
-					seatalk: {
-						...next.channels?.seatalk,
-						enabled: true,
-						appId,
-						appSecret,
-						signingSecret,
-						dmPolicy: seatalkCfg?.dmPolicy ?? "allowlist",
-					},
+					seatalk: seatalkNext,
 				},
 			} as OpenClawConfig;
 
@@ -204,23 +241,10 @@ export const seatalkSetupWizard: ChannelSetupWizard = {
 					"Important reminders:",
 					'- Bot App must be set to "Online" status in SeaTalk Open Platform',
 					'- "Send Message to Bot User" permission must be enabled',
-					"- Configure the callback URL in Event Callback settings",
 				].join("\n"),
 				"SeaTalk setup",
 			);
 		}
-
-		const currentMode =
-			(next.channels?.seatalk as SeaTalkConfig | undefined)?.mode ?? "webhook";
-		const modeChoice = await prompter.select({
-			message: "Gateway mode",
-			options: [
-				{ value: "webhook", label: "Webhook — receive event callbacks directly (default)" },
-				{ value: "relay", label: "Relay — connect to a relay service as client" },
-			],
-			initialValue: currentMode,
-		});
-		const mode = String(modeChoice) as "webhook" | "relay";
 
 		next = {
 			...next,
@@ -233,7 +257,16 @@ export const seatalkSetupWizard: ChannelSetupWizard = {
 			},
 		} as OpenClawConfig;
 
-		if (mode === "relay") {
+		if (mode === "websocket") {
+			await prompter.note(
+				[
+					"Switch the bot to WebSocket in the SeaTalk portal (Event Callback settings).",
+					"The gateway must already be connected before the portal 'Re-verify' passes.",
+					"No public URL or signing secret is needed in this mode.",
+				].join("\n"),
+				"SeaTalk WebSocket",
+			);
+		} else if (mode === "relay") {
 			const currentRelayUrl =
 				(next.channels?.seatalk as SeaTalkConfig | undefined)?.relayUrl ?? "";
 			const relayUrlInput = await prompter.text({
@@ -315,6 +348,11 @@ export const seatalkSetupWizard: ChannelSetupWizard = {
 					},
 				} as OpenClawConfig;
 			}
+
+			await prompter.note(
+				"Configure the public callback URL in the SeaTalk portal (Event Callback settings).",
+				"SeaTalk webhook",
+			);
 		}
 
 		const groupPolicyChoice = await prompter.select({

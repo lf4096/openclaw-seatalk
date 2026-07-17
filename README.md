@@ -23,8 +23,8 @@ OpenClaw channel plugin for [SeaTalk](https://seatalk.io/) messaging.
 
 ### Infrastructure
 
-- **Dual gateway mode** — **webhook** (direct HTTP server) or **relay** (WebSocket client via [seatalk-relay](https://github.com/lf4096/seatalk-relay))
-- **Security** — SHA256 signature verification for all incoming events
+- **Gateway modes** — **webhook** (direct HTTP server), **websocket** (official SeaTalk WebSocket, no public URL), or **relay** (WebSocket client via [seatalk-relay](https://github.com/lf4096/seatalk-relay))
+- **Security** — SHA256 signature verification for incoming events (webhook/relay modes; websocket mode authenticates the connection itself)
 - **Token management** — automatic access token obtain, cache, and refresh
 - **Outbound coalescing** — consecutive reply payloads are merged into a single message with automatic markdown-aware chunking at 4000 chars; configurable via `outboundCoalescing`
 - **Deduplication** — event ID dedup + per-sender debounce buffer (thread-aware)
@@ -38,7 +38,7 @@ OpenClaw channel plugin for [SeaTalk](https://seatalk.io/) messaging.
 
 1. Create a Bot App on [SeaTalk Open Platform](https://open.seatalk.io/)
 2. Get **App ID**, **App Secret** from Basic Info & Credentials
-3. Get **Signing Secret** from Event Callback settings
+3. Get **Signing Secret** from Event Callback settings (webhook/relay modes only)
 4. Enable Bot capability and set status to **Online**
 5. Enable required permissions:
    - **Send Message to Bot User**
@@ -50,9 +50,10 @@ OpenClaw channel plugin for [SeaTalk](https://seatalk.io/) messaging.
    - **Get Joined Group Chat List** (for group list tool)
    - **Get Thread by Thread ID in Private Chat** (for DM thread tool)
    - **Get Thread by Thread ID** (for group thread tool)
-6. Configure the Event Callback URL:
-   - **Webhook mode**: point to your OpenClaw server (e.g. `https://your-server:3210/callback`)
-   - **Relay mode**: point to your seatalk-relay service (e.g. `https://relay.example.com/seatalk/callback`)
+6. Configure event delivery in Event Callback settings:
+   - **Webhook mode**: set the callback URL to your OpenClaw server (e.g. `https://your-server:3210/callback`)
+   - **Relay mode**: set the callback URL to your seatalk-relay service (e.g. `https://relay.example.com/seatalk/callback`)
+   - **WebSocket mode**: switch the bot to WebSocket delivery; the gateway must already be connected before the portal "Re-verify" passes
 
 ## Installation
 
@@ -106,7 +107,7 @@ The plugin must be disabled before upgrading because the old plugin (0.1.x) impo
 
 ## Gateway Modes
 
-The plugin supports two gateway modes for receiving SeaTalk events:
+The plugin supports three gateway modes for receiving SeaTalk events:
 
 ### Webhook Mode (default)
 
@@ -116,15 +117,23 @@ The plugin starts an HTTP server to receive SeaTalk Event Callbacks directly. Su
 SeaTalk --HTTP POST-> OpenClaw (webhook server)
 ```
 
-### Relay Mode (recommended for multiple apps)
+### WebSocket Mode (official, no public URL)
 
-The plugin connects to a [seatalk-relay](https://github.com/lf4096/seatalk-relay) service as a WebSocket client. The relay service receives webhooks from SeaTalk and forwards events to the plugin. Suitable when OpenClaw runs behind a firewall or NAT without a public address.
+The plugin opens an outbound WebSocket to SeaTalk's official developer-bot endpoint (`wss://ws-openapi.haiserve.com/ws/bot`) and registers with `appId` + `appSecret`. No public callback URL, relay service, or signing secret is required. Switch the bot to WebSocket in the SeaTalk portal (Event Callback settings); the gateway must already be connected before the portal "Re-verify" passes.
+
+```
+SeaTalk WS endpoint <-WebSocket-> OpenClaw (websocket mode)
+```
+
+### Relay Mode (recommended for multiple apps sharing one callback)
+
+The plugin connects to a [seatalk-relay](https://github.com/lf4096/seatalk-relay) service as a WebSocket client. The relay service receives webhooks from SeaTalk and forwards events to the plugin. Suitable when OpenClaw runs behind a firewall or NAT without a public address and the official WebSocket mode is not used.
 
 ```
 SeaTalk API --HTTP POST-> seatalk-relay <-WebSocket-- OpenClaw (relay mode)
 ```
 
-In relay mode, outbound messages (sending replies) are still sent directly from the plugin to the SeaTalk API.
+In relay and websocket modes, outbound messages (sending replies) are still sent directly from the plugin to the SeaTalk API.
 
 ## Configuration
 
@@ -150,7 +159,24 @@ Or edit the OpenClaw config file directly (`~/.openclaw/openclaw.json`).
       webhookPort: 3210,
       webhookPath: "/callback",
       dmPolicy: "open",  // or "allowlist" | "pairing"
-      // allowFrom: ["e_12345678", "alice@company.com"],
+      allowFrom: ["*"],  // dmPolicy "open" requires the explicit wildcard
+    },
+  },
+}
+```
+
+### WebSocket mode (official, no public URL)
+
+```json5
+{
+  channels: {
+    seatalk: {
+      enabled: true,
+      mode: "websocket",
+      appId: "your_app_id",
+      appSecret: "your_app_secret",
+      dmPolicy: "allowlist",
+      allowFrom: ["alice@company.com"],
     },
   },
 }
@@ -190,10 +216,10 @@ Or edit the OpenClaw config file directly (`~/.openclaw/openclaw.json`).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | `"webhook"` \| `"relay"` | `"webhook"` | Gateway mode |
+| `mode` | `"webhook"` \| `"relay"` \| `"websocket"` | `"webhook"` | Gateway mode |
 | `appId` | string | — | SeaTalk App ID |
 | `appSecret` | string | — | SeaTalk App Secret |
-| `signingSecret` | string | — | SeaTalk Signing Secret |
+| `signingSecret` | string | — | SeaTalk Signing Secret (webhook/relay modes only) |
 | `webhookPort` | number | `8080` | HTTP port (webhook mode only) |
 | `webhookPath` | string | `"/callback"` | HTTP path (webhook mode only) |
 | `relayUrl` | string | — | WebSocket URL (relay mode only) |

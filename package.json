@@ -1,6 +1,6 @@
 {
 	"name": "openclaw-seatalk",
-	"version": "1.0.1",
+	"version": "1.1.0",
 	"description": "OpenClaw SeaTalk channel plugin",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -61,6 +61,7 @@
 			"quickstartAllowFrom": true
 		},
 		"install": {
+			"clawhubSpec": "openclaw-seatalk",
 			"npmSpec": "openclaw-seatalk",
 			"defaultChoice": "npm"
 		},

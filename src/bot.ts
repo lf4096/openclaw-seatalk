@@ -11,7 +11,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
-import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
+import { readSessionUpdatedAt, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { checkGroupAccess } from "./access.js";
 import { resolveSeaTalkAccount } from "./accounts.js";
 import type { SeaTalkClient } from "./client.js";
@@ -20,6 +20,8 @@ import {
 	deliverMediaReplies,
 	resolveForwardedMessages,
 	resolveQuotedMessage,
+	resolveThreadRootMessage,
+	wrapReferenceContext,
 } from "./inbound-resolve.js";
 import { logger } from "./log.js";
 import { resolveInboundMedia } from "./media.js";
@@ -424,6 +426,27 @@ async function dispatchSeaTalkTurn(params: {
 				: undefined,
 	});
 
+	// Core's parent-session fork can silently miss the thread root when the
+	// thread is opened before the base session's first reply is persisted, so
+	// seed the root message directly on the thread session's first turn.
+	let threadRoot: string | undefined;
+	if (
+		params.useThreadSession &&
+		params.threadId &&
+		(seatalkCfg?.threadInheritParent ?? true) &&
+		!readSessionUpdatedAt({
+			storePath: resolveStorePath(undefined, { agentId: route.agentId }),
+			sessionKey: threadKeys.sessionKey,
+		})
+	) {
+		threadRoot =
+			(await resolveThreadRootMessage({
+				client,
+				threadId: params.threadId,
+				mediaAllowHosts: seatalkCfg?.mediaAllowHosts,
+			})) ?? undefined;
+	}
+
 	const preview = params.messageText.replace(/\s+/g, " ").slice(0, 160);
 	core.system.enqueueSystemEvent(
 		isGroup
@@ -481,6 +504,18 @@ async function dispatchSeaTalkTurn(params: {
 			mentions: { canDetectMention: isGroup, wasMentioned: params.wasMentioned },
 		},
 		media: params.mediaList.length > 0 ? toInboundMediaFacts(params.mediaList) : undefined,
+		supplemental: threadRoot
+			? {
+					thread: {
+						starterBody: threadRoot,
+						historyBody: wrapReferenceContext(
+							"thread-root",
+							"message this thread was started from",
+							threadRoot,
+						),
+					},
+				}
+			: undefined,
 		extra: Object.keys(params.metadata).length > 0 ? { Metadata: params.metadata } : undefined,
 	});
 
@@ -643,7 +678,11 @@ async function processBufferedDmEvents(entries: DmBufferEntry[]): Promise<void> 
 					mediaList.push(...result.media);
 					textParts.push(
 						result.lines.length > 0
-							? `[Forwarded messages]\n${result.lines.join("\n")}`
+							? wrapReferenceContext(
+									"forwarded-messages",
+									"forwarded chat history",
+									result.lines.join("\n"),
+								)
 							: "[Forwarded messages]",
 					);
 				}
@@ -757,7 +796,11 @@ async function processBufferedGroupEvents(entries: GroupBufferEntry[]): Promise<
 					mediaList.push(...result.media);
 					textParts.push(
 						result.lines.length > 0
-							? `[Forwarded messages]\n${result.lines.join("\n")}`
+							? wrapReferenceContext(
+									"forwarded-messages",
+									"forwarded chat history",
+									result.lines.join("\n"),
+								)
 							: "[Forwarded messages]",
 					);
 				}

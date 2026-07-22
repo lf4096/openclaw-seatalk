@@ -3,6 +3,7 @@
 ## 1.1.0
 
 - Add official SeaTalk WebSocket event mode (`mode: "websocket"`).
+- Seed the thread root message on a thread session's first turn.
 - Add the plugin manifest display name and `install.clawhubSpec` so the ClawHub Plugin Inspector validates without warnings.
 
 ## 1.0.1

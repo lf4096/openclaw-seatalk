@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1
+
+- Fix the gateway exiting on the first inbound message with OpenClaw 2026.7.2-beta.6 or newer.
+- Return the message id from outbound sends, so deliveries are no longer reported as unconfirmed.
+- Strip the leading group mention before command detection.
+- Reply instead of dropping the message when the agent binding does not resolve.
+
 ## 1.1.0
 
 - Add official SeaTalk WebSocket event mode (`mode: "websocket"`).

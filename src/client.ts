@@ -173,28 +173,31 @@ export class SeaTalkClient {
 		employeeCode: string,
 		message: Record<string, unknown>,
 		threadId?: string,
-	): Promise<void> {
+	): Promise<string> {
 		const tag = (message as { tag?: string }).tag;
 		logger("outbound").info("dm send", { employeeCode, tag, threadId });
 		const msg = threadId ? { ...message, thread_id: threadId } : message;
-		await this.apiCall("POST", "/messaging/v2/single_chat", {
-			employee_code: employeeCode,
-			message: msg,
-		});
+		const res = await this.apiCall<{ message_id?: string }>(
+			"POST",
+			"/messaging/v2/single_chat",
+			{ employee_code: employeeCode, message: msg },
+		);
+		return res.message_id ?? "";
 	}
 
 	async sendGroupChat(
 		groupId: string,
 		message: Record<string, unknown>,
 		threadId?: string,
-	): Promise<void> {
+	): Promise<string> {
 		const tag = (message as { tag?: string }).tag;
 		logger("outbound").info("group send", { groupId, tag, threadId });
 		const msg = threadId ? { ...message, thread_id: threadId } : message;
-		await this.apiCall("POST", "/messaging/v2/group_chat", {
+		const res = await this.apiCall<{ message_id?: string }>("POST", "/messaging/v2/group_chat", {
 			group_id: groupId,
 			message: msg,
 		});
+		return res.message_id ?? "";
 	}
 
 	async setSingleChatTyping(employeeCode: string, threadId?: string): Promise<void> {

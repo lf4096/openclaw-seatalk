@@ -1,6 +1,6 @@
 {
 	"name": "openclaw-seatalk",
-	"version": "1.1.0",
+	"version": "1.1.1",
 	"description": "OpenClaw SeaTalk channel plugin",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -24,7 +24,8 @@
 		"lint:fix": "biome lint --fix .",
 		"check": "biome check .",
 		"check:fix": "biome check --fix .",
-		"prepublishOnly": "pnpm build"
+		"typecheck": "tsc --noEmit",
+		"prepublishOnly": "pnpm typecheck && pnpm build"
 	},
 	"dependencies": {
 		"@sinclair/typebox": "0.34.48",
@@ -33,6 +34,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",
+		"@types/node": "^22.16.0",
 		"@types/ws": "^8.5.0",
 		"openclaw": "2026.6.1",
 		"tsup": "^8.3.0",

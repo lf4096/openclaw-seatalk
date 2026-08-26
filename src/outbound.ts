@@ -40,13 +40,13 @@ export const seatalkOutbound: ChannelOutboundAdapter = {
 		const { kind, id } = resolveSeaTalkTargetKind(to);
 
 		if (kind === "group") {
-			await sendGroupTextMessage(client, id, text, 1, tid);
-			return { channel: "seatalk", messageId: "", chatId: id };
+			const messageId = await sendGroupTextMessage(client, id, text, 1, tid);
+			return { channel: "seatalk", messageId, chatId: id };
 		}
 
 		const employeeCode = await resolveEmployeeCode(client, id);
-		await sendTextMessage(client, employeeCode, text, 1, tid);
-		return { channel: "seatalk", messageId: "", chatId: employeeCode };
+		const messageId = await sendTextMessage(client, employeeCode, text, 1, tid);
+		return { channel: "seatalk", messageId, chatId: employeeCode };
 	},
 
 	sendMedia: async ({ cfg, to, text, mediaUrl, accountId, threadId }) => {
@@ -56,27 +56,43 @@ export const seatalkOutbound: ChannelOutboundAdapter = {
 		const isGroup = kind === "group";
 		const target = isGroup ? id : await resolveEmployeeCode(client, id);
 
+		// The host reconciles a send by the id of its last part, so each step
+		// overwrites the previous one. An empty id is a part that never went out,
+		// which must not erase the id of one that did.
+		let messageId = "";
+		const record = (id: string) => {
+			if (id) messageId = id;
+		};
+
 		if (text?.trim()) {
-			if (isGroup) {
-				await sendGroupTextMessage(client, target, text, 1, tid);
-			} else {
-				await sendTextMessage(client, target, text, 1, tid);
-			}
+			record(
+				isGroup
+					? await sendGroupTextMessage(client, target, text, 1, tid)
+					: await sendTextMessage(client, target, text, 1, tid),
+			);
 		}
 
 		if (mediaUrl) {
 			try {
-				await sendMediaToTarget({ client, to: target, mediaUrl, threadId: tid, isGroup });
+				record(
+					await sendMediaToTarget({
+						client,
+						to: target,
+						mediaUrl,
+						threadId: tid,
+						isGroup,
+					}),
+				);
 			} catch (err) {
 				const fallbackText = `[Media send failed: ${err instanceof Error ? err.message : String(err)}]`;
-				if (isGroup) {
-					await sendGroupTextMessage(client, target, fallbackText, 2, tid);
-				} else {
-					await sendTextMessage(client, target, fallbackText, 2, tid);
-				}
+				record(
+					isGroup
+						? await sendGroupTextMessage(client, target, fallbackText, 2, tid)
+						: await sendTextMessage(client, target, fallbackText, 2, tid),
+				);
 			}
 		}
 
-		return { channel: "seatalk", messageId: "", chatId: target };
+		return { channel: "seatalk", messageId, chatId: target };
 	},
 };

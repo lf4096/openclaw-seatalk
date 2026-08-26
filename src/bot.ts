@@ -198,14 +198,20 @@ function getInboundDebouncer(): InboundDebouncer {
 						entry.groupEvent.message.sender.employee_code,
 						entry.groupEvent.message.thread_id,
 					),
-		onFlush: async (entries) => {
-			const first = entries[0];
-			if (!first) return;
-			if (first.kind === "dm") {
-				await processBufferedDmEvents(entries as DmBufferEntry[]);
-			} else {
-				await processBufferedGroupEvents(entries as GroupBufferEntry[]);
-			}
+		onFlush: (entries) => {
+			const dispatch = async () => {
+				const first = entries[0];
+				if (!first) return;
+				if (first.kind === "dm") {
+					await processBufferedDmEvents(entries as DmBufferEntry[]);
+				} else {
+					await processBufferedGroupEvents(entries as GroupBufferEntry[]);
+				}
+			};
+			// Since 2026.7.2-beta.6 the host reads `.admission` and `.completion` off
+			// this return value instead of awaiting it; hosts before that await it.
+			const running = dispatch();
+			return Object.assign(running, { admission: running, completion: running });
 		},
 		onError: (err) => {
 			logger("inbound").error("debounce flush failed", { err: String(err) });
@@ -410,12 +416,36 @@ async function dispatchSeaTalkTurn(params: {
 	const account = resolveSeaTalkAccount({ cfg, accountId });
 	const seatalkCfg = account.config;
 
-	const route = core.channel.routing.resolveAgentRoute({
-		cfg,
-		channel: "seatalk",
-		accountId,
-		peer: { kind: params.chatType, id: params.peerId },
-	});
+	// Throws when a binding names an unconfigured agent, or when several agents
+	// exist with no single default; a merely missing binding falls back instead.
+	let route: ReturnType<typeof core.channel.routing.resolveAgentRoute>;
+	try {
+		route = core.channel.routing.resolveAgentRoute({
+			cfg,
+			channel: "seatalk",
+			accountId,
+			peer: { kind: params.chatType, id: params.peerId },
+		});
+	} catch (err) {
+		log.error("agent route resolution failed", {
+			accountId,
+			peerId: params.peerId,
+			chatType: params.chatType,
+			err: String(err),
+		});
+		const notice =
+			"I cannot route this message: the agent binding for this conversation does not resolve to a configured agent. Please ask this bot's owner to check the agent bindings.";
+		await (isGroup
+			? sendGroupTextMessage(client, params.peerId, notice, 1, params.threadId)
+			: sendTextMessage(client, params.peerId, notice, 1, params.threadId)
+		).catch((sendErr) => {
+			log.warn("route failure notice send failed", {
+				peerId: params.peerId,
+				err: String(sendErr),
+			});
+		});
+		return;
+	}
 
 	const threadKeys = resolveThreadSessionKeys({
 		baseSessionKey: route.sessionKey,

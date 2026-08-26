@@ -252,6 +252,12 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 			});
 		},
 	},
+	mentions: {
+		// Group events only arrive when the bot is mentioned, so a leading `@` run is
+		// always its own mention. SeaTalk renders it as plain text and the display name
+		// is unknown here, so the run is only cut when a slash command follows.
+		stripRegexes: () => [/^@[^\n]*?\s(?=\/)/],
+	},
 	outbound: seatalkOutbound,
 	status: {
 		defaultRuntime: {

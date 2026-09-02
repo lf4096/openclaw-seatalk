@@ -11,6 +11,7 @@ OpenClaw channel plugin for [SeaTalk](https://seatalk.io/) messaging.
 - **Thread messages** — each DM or group thread runs as an isolated agent session that inherits the parent transcript on first reply; replies are routed back to the originating thread
 - **Quoted messages** — inbound messages with `quoted_message_id` are automatically resolved (text + media download) and provided to the AI as context
 - **Media handling** — inbound: image/file/video URL download; outbound: image/file base64 upload; video receive-only
+- **Interactive message cards** — agent questions render as cards with tappable options; once the question closes the buttons give way to a checklist or a status line
 - **Typing indicator** — one-shot typing status via SeaTalk API for both private and group chats (configurable: `typing` or `off`)
 
 ### Agent Tool
@@ -67,6 +68,8 @@ OpenClaw downloads the package, installs dependencies, and registers the plugin 
 
 | Plugin version | OpenClaw version |
 |---------------|-----------------|
+| 1.2.x | >= 2026.8.1 |
+| 1.0.x - 1.1.x | >= 2026.6.1 |
 | 0.2.x | >= 2026.3.22 |
 | 0.1.x | < 2026.3.22 |
 

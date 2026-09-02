@@ -1,5 +1,8 @@
 import type { AssembledInboundReply, InboundMediaFacts } from "openclaw/plugin-sdk/channel-inbound";
-import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
+import {
+	bindIngressLifecycleToReplyOptions,
+	createChannelMessageReplyPipeline,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
 import {
 	DM_GROUP_ACCESS_REASON,
@@ -7,6 +10,7 @@ import {
 } from "openclaw/plugin-sdk/channel-policy";
 
 type SeaTalkDelivery = AssembledInboundReply["delivery"];
+type InboundTurnAdmissionLifecycle = Parameters<typeof bindIngressLifecycleToReplyOptions>[0];
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
@@ -23,13 +27,21 @@ import {
 	resolveThreadRootMessage,
 	wrapReferenceContext,
 } from "./inbound-resolve.js";
+import {
+	decodeSeaTalkQuestionAction,
+	renderSeaTalkPresentationFallbackText,
+	renderSeaTalkReplyPresentation,
+	resolveSeaTalkQuestionAction,
+	sendSeaTalkQuestionCard,
+} from "./interactive-message.js";
 import { logger } from "./log.js";
 import { resolveInboundMedia } from "./media.js";
 import { getSeatalkRuntime } from "./runtime.js";
-import { sendGroupTextMessage, sendTextMessage } from "./send.js";
+import { sendGroupTextMessage, sendTextMessage, sendTextToTarget } from "./send.js";
 import type {
 	SeaTalkCallbackRequest,
 	SeaTalkGroupMessageEvent,
+	SeaTalkInteractiveMessageClickEvent,
 	SeaTalkMediaInfo,
 	SeaTalkMessageEvent,
 } from "./types.js";
@@ -74,6 +86,9 @@ export function dispatchSeaTalkEvent(params: {
 		case "new_message_received_from_thread":
 			handle(() => handleSeaTalkGroupMessage({ cfg, event, client, runtime, accountId }));
 			break;
+		case "interactive_message_click":
+			handle(() => handleSeaTalkInteractiveMessageClick({ cfg, event, client, accountId }));
+			break;
 		case "new_bot_subscriber": {
 			const employeeCode = (event.event as { employee_code?: string })?.employee_code;
 			log.info("new subscriber", { accountId, employeeCode });
@@ -92,6 +107,124 @@ export function dispatchSeaTalkEvent(params: {
 		default:
 			log.warn("unhandled event", { accountId, eventType: event.event_type });
 	}
+}
+
+async function resolveSeaTalkDmAccess(params: {
+	cfg: OpenClawConfig;
+	accountId: string;
+	employeeCode: string;
+	email?: string;
+}) {
+	const { cfg, accountId, employeeCode, email } = params;
+	const seatalkCfg = resolveSeaTalkAccount({ cfg, accountId }).config;
+	const dmPolicy = seatalkCfg?.dmPolicy ?? "allowlist";
+	const pairing = createChannelPairingController({
+		core: getSeatalkRuntime(),
+		channel: "seatalk",
+		accountId,
+	});
+	const storeAllowFrom =
+		dmPolicy === "pairing" ? await pairing.readAllowFromStore().catch(() => []) : [];
+	const decision = resolveDmGroupAccessWithLists({
+		isGroup: false,
+		dmPolicy,
+		groupPolicy: "disabled",
+		allowFrom: (seatalkCfg?.allowFrom ?? []).map((v) => String(v)),
+		groupAllowFrom: [],
+		storeAllowFrom,
+		isSenderAllowed: (list) => isSeaTalkSenderAllowed(employeeCode, email, list),
+	});
+	return { decision, pairing };
+}
+
+async function checkSeaTalkClickAccess(params: {
+	cfg: OpenClawConfig;
+	accountId: string;
+	click: SeaTalkInteractiveMessageClickEvent;
+}): Promise<{ allowed: boolean; reason?: string }> {
+	const { cfg, accountId, click } = params;
+
+	if (click.group_id) {
+		const seatalkCfg = resolveSeaTalkAccount({ cfg, accountId }).config;
+		return checkGroupAccess({
+			groupPolicy: seatalkCfg?.groupPolicy ?? "disabled",
+			groupAllowFrom: seatalkCfg?.groupAllowFrom,
+			groupSenderAllowFrom: seatalkCfg?.groupSenderAllowFrom,
+			groupId: click.group_id,
+			senderEmployeeCode: click.employee_code,
+			senderEmail: click.email,
+		});
+	}
+
+	const { decision } = await resolveSeaTalkDmAccess({
+		cfg,
+		accountId,
+		employeeCode: click.employee_code,
+		email: click.email,
+	});
+	return decision.decision === "allow"
+		? { allowed: true }
+		: { allowed: false, reason: decision.reason };
+}
+
+export async function handleSeaTalkInteractiveMessageClick(params: {
+	cfg: OpenClawConfig;
+	event: SeaTalkCallbackRequest;
+	client: SeaTalkClient;
+	accountId: string;
+}): Promise<void> {
+	const { cfg, event, client, accountId } = params;
+	const log = logger("inbound");
+	if (!tryRecordEvent(`${accountId}:${event.event_id}`)) {
+		log.info("duplicate interactive message event skipped", {
+			accountId,
+			eventId: event.event_id,
+		});
+		return;
+	}
+	const click = event.event as unknown as SeaTalkInteractiveMessageClickEvent;
+	const action = decodeSeaTalkQuestionAction(click?.value);
+	if (!click?.employee_code || !action) {
+		log.info("unrecognized interactive message click", { accountId });
+		return;
+	}
+
+	log.info("interactive message click received", {
+		accountId,
+		employeeCode: click.employee_code,
+		groupId: click.group_id,
+		threadId: click.thread_id,
+	});
+
+	const access = await checkSeaTalkClickAccess({ cfg, accountId, click });
+	if (!access.allowed) {
+		log.warn("interactive message click access denied", {
+			accountId,
+			employeeCode: click.employee_code,
+			groupId: click.group_id,
+			reason: access.reason,
+		});
+		return;
+	}
+
+	await resolveSeaTalkQuestionAction({
+		action,
+		cfg,
+		accountId,
+		employeeCode: click.employee_code,
+		client,
+		messageId: click.message_id,
+		respond: (text) =>
+			sendTextToTarget(
+				client,
+				{
+					isGroup: !!click.group_id,
+					to: click.group_id || click.employee_code,
+					threadId: click.thread_id,
+				},
+				text,
+			),
+	});
 }
 
 const DEDUP_TTL_MS = 30 * 60 * 1000;
@@ -198,21 +331,18 @@ function getInboundDebouncer(): InboundDebouncer {
 						entry.groupEvent.message.sender.employee_code,
 						entry.groupEvent.message.thread_id,
 					),
-		onFlush: (entries) => {
-			const dispatch = async () => {
-				const first = entries[0];
-				if (!first) return;
-				if (first.kind === "dm") {
-					await processBufferedDmEvents(entries as DmBufferEntry[]);
-				} else {
-					await processBufferedGroupEvents(entries as GroupBufferEntry[]);
-				}
-			};
-			// Since 2026.7.2-beta.6 the host reads `.admission` and `.completion` off
-			// this return value instead of awaiting it; hosts before that await it.
-			const running = dispatch();
-			return Object.assign(running, { admission: running, completion: running });
-		},
+		onFlush: (entries, createFlush) =>
+			createFlush({
+				dispatch: async (lifecycle) => {
+					const first = entries[0];
+					if (!first) return;
+					if (first.kind === "dm") {
+						await processBufferedDmEvents(entries as DmBufferEntry[], lifecycle);
+					} else {
+						await processBufferedGroupEvents(entries as GroupBufferEntry[], lifecycle);
+					}
+				},
+			}),
 		onError: (err) => {
 			logger("inbound").error("debounce flush failed", { err: String(err) });
 		},
@@ -355,20 +485,44 @@ function buildSeaTalkDelivery(params: {
 	accountId: string;
 }): SeaTalkDelivery {
 	const { client, to, threadId, isGroup, chunkText, log, accountId } = params;
-	const sendText = (text: string) =>
-		isGroup
-			? sendGroupTextMessage(client, to, text, 1, threadId)
-			: sendTextMessage(client, to, text, 1, threadId);
+	const target = { isGroup, to, threadId };
+	const sendText = (text: string) => sendTextToTarget(client, target, text);
 	return {
 		deliver: async (payload) => {
 			const reply = resolveSendableOutboundReplyParts(payload);
-			if (!reply.hasText && !reply.hasMedia) return;
-
-			if (reply.hasText) {
-				log.info("inline deliver", { accountId, to, threadId, kind: "text" });
-				for (const chunk of chunkText(reply.trimmedText, SEATALK_TEXT_CHUNK_LIMIT)) {
+			const interactiveMessage = renderSeaTalkReplyPresentation(payload);
+			const text = interactiveMessage
+				? reply.trimmedText
+				: (renderSeaTalkPresentationFallbackText(payload) ?? reply.trimmedText);
+			if (!interactiveMessage && !text && !reply.hasMedia) return;
+			const sendTextChunks = async (body: string) => {
+				for (const chunk of chunkText(body, SEATALK_TEXT_CHUNK_LIMIT))
 					await sendText(chunk);
+			};
+
+			if (interactiveMessage) {
+				log.info("inline deliver", { accountId, to, threadId, kind: "interactive" });
+				try {
+					await sendSeaTalkQuestionCard({
+						client,
+						target,
+						interactiveMessage,
+						payload,
+						accountId,
+					});
+				} catch (err) {
+					const fallback = renderSeaTalkPresentationFallbackText(payload) ?? text;
+					log.warn("interactive deliver failed", {
+						accountId,
+						to,
+						threadId,
+						err: String(err),
+					});
+					if (fallback) await sendTextChunks(fallback);
 				}
+			} else if (text) {
+				log.info("inline deliver", { accountId, to, threadId, kind: "text" });
+				await sendTextChunks(text);
 			}
 
 			if (reply.hasMedia) {
@@ -379,13 +533,7 @@ function buildSeaTalkDelivery(params: {
 					kind: "media",
 					count: reply.mediaUrls.length,
 				});
-				await deliverMediaReplies({
-					mediaUrls: reply.mediaUrls,
-					client,
-					to,
-					threadId,
-					isGroup,
-				});
+				await deliverMediaReplies({ mediaUrls: reply.mediaUrls, client, target });
 			}
 		},
 	};
@@ -407,6 +555,7 @@ async function dispatchSeaTalkTurn(params: {
 	mediaList: SeaTalkMediaInfo[];
 	useThreadSession: boolean;
 	metadata: Record<string, string>;
+	lifecycle: InboundTurnAdmissionLifecycle;
 }): Promise<void> {
 	const { cfg, client, accountId } = params.ctx;
 	const log = logger("inbound");
@@ -435,9 +584,10 @@ async function dispatchSeaTalkTurn(params: {
 		});
 		const notice =
 			"I cannot route this message: the agent binding for this conversation does not resolve to a configured agent. Please ask this bot's owner to check the agent bindings.";
-		await (isGroup
-			? sendGroupTextMessage(client, params.peerId, notice, 1, params.threadId)
-			: sendTextMessage(client, params.peerId, notice, 1, params.threadId)
+		await sendTextToTarget(
+			client,
+			{ isGroup, to: params.peerId, threadId: params.threadId },
+			notice,
 		).catch((sendErr) => {
 			log.warn("route failure notice send failed", {
 				peerId: params.peerId,
@@ -598,7 +748,11 @@ async function dispatchSeaTalkTurn(params: {
 			accountId,
 		}),
 		replyPipeline,
-		replyOptions: { onModelSelected, disableBlockStreaming: true },
+		replyOptions: {
+			onModelSelected,
+			disableBlockStreaming: true,
+			...bindIngressLifecycleToReplyOptions(params.lifecycle),
+		},
 		record: {
 			onRecordError: (err) =>
 				log.warn("record session failed", { accountId, err: String(err) }),
@@ -621,7 +775,10 @@ async function dispatchSeaTalkTurn(params: {
 	});
 }
 
-async function processBufferedDmEvents(entries: DmBufferEntry[]): Promise<void> {
+async function processBufferedDmEvents(
+	entries: DmBufferEntry[],
+	lifecycle: InboundTurnAdmissionLifecycle,
+): Promise<void> {
 	const ctx = entries[0].ctx;
 	const { cfg, client, accountId } = ctx;
 	const log = logger("inbound");
@@ -633,22 +790,11 @@ async function processBufferedDmEvents(entries: DmBufferEntry[]): Promise<void> 
 	const account = resolveSeaTalkAccount({ cfg, accountId });
 	const seatalkCfg = account.config;
 
-	const core = getSeatalkRuntime();
-	const dmPolicy = seatalkCfg?.dmPolicy ?? "allowlist";
-	const configAllowFrom = (seatalkCfg?.allowFrom ?? []).map((v) => String(v));
-
-	const pairing = createChannelPairingController({ core, channel: "seatalk", accountId });
-	const storeAllowFrom =
-		dmPolicy === "pairing" ? await pairing.readAllowFromStore().catch(() => []) : [];
-
-	const accessDecision = resolveDmGroupAccessWithLists({
-		isGroup: false,
-		dmPolicy,
-		groupPolicy: "disabled",
-		allowFrom: configAllowFrom,
-		groupAllowFrom: [],
-		storeAllowFrom,
-		isSenderAllowed: (list) => isSeaTalkSenderAllowed(employeeCode, email, list),
+	const { decision: accessDecision, pairing } = await resolveSeaTalkDmAccess({
+		cfg,
+		accountId,
+		employeeCode,
+		email,
 	});
 
 	if (accessDecision.decision === "pairing") {
@@ -692,7 +838,7 @@ async function processBufferedDmEvents(entries: DmBufferEntry[]): Promise<void> 
 		switch (msg.tag) {
 			case "text":
 				if (msg.text?.plain_text || msg.text?.content)
-					textParts.push(msg.text.plain_text ?? msg.text.content ?? "");
+					textParts.push(msg.text.plain_text || msg.text.content || "");
 				break;
 			case "image":
 			case "file":
@@ -778,13 +924,17 @@ async function processBufferedDmEvents(entries: DmBufferEntry[]): Promise<void> 
 			mediaList,
 			useThreadSession: (seatalkCfg?.dmThreadSession ?? true) && Boolean(threadId),
 			metadata,
+			lifecycle,
 		});
 	} catch (err) {
 		log.error("dm dispatch failed", { accountId, employeeCode, err: String(err) });
 	}
 }
 
-async function processBufferedGroupEvents(entries: GroupBufferEntry[]): Promise<void> {
+async function processBufferedGroupEvents(
+	entries: GroupBufferEntry[],
+	lifecycle: InboundTurnAdmissionLifecycle,
+): Promise<void> {
 	const ctx = entries[0].ctx;
 	const { cfg, client, accountId } = ctx;
 	const log = logger("inbound");
@@ -810,7 +960,7 @@ async function processBufferedGroupEvents(entries: GroupBufferEntry[]): Promise<
 		switch (m.tag) {
 			case "text":
 				if (m.text?.plain_text || m.text?.content)
-					textParts.push(m.text.plain_text ?? m.text.content ?? "");
+					textParts.push(m.text.plain_text || m.text.content || "");
 				break;
 			case "image":
 			case "file":
@@ -893,6 +1043,7 @@ async function processBufferedGroupEvents(entries: GroupBufferEntry[]): Promise<
 			mediaList,
 			useThreadSession: (seatalkCfg?.groupThreadSession ?? true) && Boolean(threadId),
 			metadata,
+			lifecycle,
 		});
 	} catch (err) {
 		log.error("group dispatch failed", { accountId, groupId, err: String(err) });

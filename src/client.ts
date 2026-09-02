@@ -193,10 +193,14 @@ export class SeaTalkClient {
 		const tag = (message as { tag?: string }).tag;
 		logger("outbound").info("group send", { groupId, tag, threadId });
 		const msg = threadId ? { ...message, thread_id: threadId } : message;
-		const res = await this.apiCall<{ message_id?: string }>("POST", "/messaging/v2/group_chat", {
-			group_id: groupId,
-			message: msg,
-		});
+		const res = await this.apiCall<{ message_id?: string }>(
+			"POST",
+			"/messaging/v2/group_chat",
+			{
+				group_id: groupId,
+				message: msg,
+			},
+		);
 		return res.message_id ?? "";
 	}
 
@@ -330,6 +334,14 @@ export class SeaTalkClient {
 			"GET",
 			`/messaging/v2/get_message_by_message_id?message_id=${encodeURIComponent(messageId)}`,
 		);
+	}
+
+	async updateMessage(messageId: string, message: Record<string, unknown>): Promise<void> {
+		logger("outbound").info("message update", { messageId });
+		await this.apiCall("POST", "/messaging/v2/update", {
+			message_id: messageId,
+			message,
+		});
 	}
 
 	getAppId(): string {

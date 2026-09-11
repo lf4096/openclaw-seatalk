@@ -2,7 +2,7 @@ import { sendMediaWithLeadingCaption } from "openclaw/plugin-sdk/reply-payload";
 import type { SeaTalkClient } from "./client.js";
 import { logger } from "./log.js";
 import { resolveInboundMedia } from "./media.js";
-import { sendMediaToTarget } from "./send.js";
+import { type SeaTalkChatTarget, sendMediaToTarget } from "./send.js";
 import type { SeaTalkMediaInfo, SeaTalkMessage } from "./types.js";
 
 export type MessageResolveContext = {
@@ -49,7 +49,7 @@ export async function resolveMessageContent(
 
 	if (tag === "text") {
 		const textObj = data.text as { plain_text?: string; content?: string } | undefined;
-		return { text: textObj?.plain_text ?? textObj?.content ?? "", media };
+		return { text: textObj?.plain_text || textObj?.content || "", media };
 	}
 
 	if (tag === "image" || tag === "file" || tag === "video") {
@@ -167,16 +167,15 @@ export async function resolveThreadRootMessage(params: {
 export async function deliverMediaReplies(params: {
 	mediaUrls: string[];
 	client: SeaTalkClient;
-	to: string;
-	threadId?: string;
-	isGroup: boolean;
+	target: SeaTalkChatTarget;
 }): Promise<void> {
-	const { mediaUrls, client, to, threadId, isGroup } = params;
+	const { mediaUrls, client, target } = params;
+	const { isGroup, to, threadId } = target;
 	await sendMediaWithLeadingCaption({
 		mediaUrls,
 		caption: "",
 		send: async ({ mediaUrl }) => {
-			await sendMediaToTarget({ client, to, mediaUrl, threadId, isGroup });
+			await sendMediaToTarget({ client, target, mediaUrl });
 		},
 		onError: async ({ error, mediaUrl }) => {
 			logger("outbound").error("media delivery failed", {

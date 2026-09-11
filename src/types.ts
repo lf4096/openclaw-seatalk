@@ -45,6 +45,16 @@ export type SeaTalkGroupMessageEvent = {
 	message: SeaTalkGroupMessage;
 };
 
+export type SeaTalkInteractiveMessageClickEvent = {
+	message_id: string;
+	employee_code: string;
+	email?: string;
+	value: string;
+	seatalk_id?: string;
+	group_id?: string;
+	thread_id?: string;
+};
+
 export type SeaTalkGroupMessage = SeaTalkMessage & {
 	sender: {
 		seatalk_id: string;

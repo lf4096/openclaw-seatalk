@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0
+
+- Render agent questions as SeaTalk interactive message cards; a tap answers, and once the question closes the buttons give way to a checklist or a status line.
+- Release the inbound debounce lane once the turn is admitted, so a message sent mid-turn reaches that turn.
+- Require OpenClaw 2026.8.1 or newer.
+
 ## 1.1.1
 
 - Fix the gateway exiting on the first inbound message with OpenClaw 2026.7.2-beta.6 or newer.

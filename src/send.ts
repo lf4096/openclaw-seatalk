@@ -56,14 +56,26 @@ export async function sendGroupTextMessage(
 	);
 }
 
+export type SeaTalkChatTarget = { isGroup: boolean; to: string; threadId?: string };
+
+export async function sendTextToTarget(
+	client: SeaTalkClient,
+	target: SeaTalkChatTarget,
+	text: string,
+	format: 1 | 2 = 1,
+): Promise<string> {
+	return target.isGroup
+		? await sendGroupTextMessage(client, target.to, text, format, target.threadId)
+		: await sendTextMessage(client, target.to, text, format, target.threadId);
+}
+
 export async function sendMediaToTarget(params: {
 	client: SeaTalkClient;
-	to: string;
+	target: SeaTalkChatTarget;
 	mediaUrl: string;
-	threadId?: string;
-	isGroup: boolean;
 }): Promise<string> {
-	const { client, to, mediaUrl, threadId, isGroup } = params;
+	const { client, mediaUrl } = params;
+	const { isGroup, to, threadId } = params.target;
 	const media = await prepareOutboundMedia(mediaUrl);
 	if (!media) return "";
 

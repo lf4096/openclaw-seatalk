@@ -10,6 +10,7 @@ import {
 	listSeaTalkAccountIds,
 	resolveDefaultSeaTalkAccountId,
 	resolveSeaTalkAccount,
+	resolveStoredAccountKey,
 } from "./accounts.js";
 import { resolveSeaTalkClient } from "./client.js";
 import { SeaTalkConfigSchema } from "./config-schema.js";
@@ -79,6 +80,8 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 			}
 
 			const seatalkCfg = cfg.channels?.seatalk as SeaTalkConfig | undefined;
+			const accounts = seatalkCfg?.accounts;
+			const storedKey = resolveStoredAccountKey(accounts, accountId) ?? accountId;
 			return {
 				...cfg,
 				channels: {
@@ -86,9 +89,9 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 					seatalk: {
 						...seatalkCfg,
 						accounts: {
-							...seatalkCfg?.accounts,
-							[accountId]: {
-								...seatalkCfg?.accounts?.[accountId],
+							...accounts,
+							[storedKey]: {
+								...accounts?.[storedKey],
 								enabled,
 							},
 						},
@@ -110,7 +113,10 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 
 			const seatalkCfg = cfg.channels?.seatalk as SeaTalkConfig | undefined;
 			const accounts = { ...seatalkCfg?.accounts };
-			delete accounts[accountId];
+			const storedKey = resolveStoredAccountKey(accounts, accountId);
+			if (storedKey) {
+				delete accounts[storedKey];
+			}
 
 			return {
 				...cfg,
@@ -173,6 +179,8 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 			}
 
 			const seatalkCfg = cfg.channels?.seatalk as SeaTalkConfig | undefined;
+			const accounts = seatalkCfg?.accounts;
+			const storedKey = resolveStoredAccountKey(accounts, accountId) ?? accountId;
 			return {
 				...cfg,
 				channels: {
@@ -180,9 +188,9 @@ export const seatalkPlugin: ChannelPlugin<ResolvedSeaTalkAccount> = {
 					seatalk: {
 						...seatalkCfg,
 						accounts: {
-							...seatalkCfg?.accounts,
-							[accountId]: {
-								...seatalkCfg?.accounts?.[accountId],
+							...accounts,
+							[storedKey]: {
+								...accounts?.[storedKey],
 								enabled: true,
 							},
 						},

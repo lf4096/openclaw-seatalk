@@ -3,6 +3,7 @@ import {
 	type OpenClawConfig,
 	normalizeAccountId,
 } from "openclaw/plugin-sdk/core";
+import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { ResolvedSeaTalkAccount, SeaTalkAccountConfig, SeaTalkConfig } from "./types.js";
 
 function listConfiguredAccountIds(cfg: OpenClawConfig): string[] {
@@ -29,15 +30,27 @@ export function resolveDefaultSeaTalkAccountId(cfg: OpenClawConfig): string {
 	return ids[0] ?? DEFAULT_ACCOUNT_ID;
 }
 
+export function resolveStoredAccountKey(
+	accounts: Record<string, unknown> | undefined,
+	accountId: string,
+): string | undefined {
+	if (!accounts || typeof accounts !== "object") {
+		return undefined;
+	}
+	if (Object.hasOwn(accounts, accountId)) {
+		return accountId;
+	}
+	const normalized = normalizeLowercaseStringOrEmpty(accountId);
+	return Object.keys(accounts).find((key) => normalizeLowercaseStringOrEmpty(key) === normalized);
+}
+
 function resolveAccountConfig(
 	cfg: OpenClawConfig,
 	accountId: string,
 ): SeaTalkAccountConfig | undefined {
 	const accounts = (cfg.channels?.seatalk as SeaTalkConfig)?.accounts;
-	if (!accounts || typeof accounts !== "object") {
-		return undefined;
-	}
-	return accounts[accountId];
+	const storedKey = resolveStoredAccountKey(accounts, accountId);
+	return storedKey === undefined ? undefined : accounts?.[storedKey];
 }
 
 function mergeSeaTalkAccountConfig(cfg: OpenClawConfig, accountId: string): SeaTalkConfig {

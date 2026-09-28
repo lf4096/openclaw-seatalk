@@ -11,5 +11,5 @@
 		"noEmit": true,
 		"types": ["node"]
 	},
-	"include": ["index.ts", "setup-entry.ts", "src/**/*.ts"]
+	"include": ["index.ts", "setup-entry.ts", "doctor-contract-api.ts", "src/**/*.ts"]
 }

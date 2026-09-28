@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-	entry: ["index.ts", "setup-entry.ts"],
+	entry: ["index.ts", "setup-entry.ts", "doctor-contract-api.ts"],
 	format: ["esm"],
 	target: "node22",
 	platform: "node",

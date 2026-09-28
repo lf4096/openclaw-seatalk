@@ -4,7 +4,8 @@
 
 - Render agent questions as SeaTalk interactive message cards; a tap answers, and once the question closes the buttons give way to a checklist or a status line.
 - Release the inbound debounce lane once the turn is admitted, so a message sent mid-turn reaches that turn.
-- Require OpenClaw 2026.8.1 or newer.
+- Declare the plugin stateless to OpenClaw Doctor, so the data/settings upgrade check completes on OpenClaw 2026.9.5 and newer.
+- Require OpenClaw 2026.8.2 or newer.
 
 ## 1.1.1
 

@@ -68,7 +68,7 @@ OpenClaw downloads the package, installs dependencies, and registers the plugin 
 
 | Plugin version | OpenClaw version |
 |---------------|-----------------|
-| 1.2.x | >= 2026.8.1 |
+| 1.2.x | >= 2026.8.2 |
 | 1.0.x - 1.1.x | >= 2026.6.1 |
 | 0.2.x | >= 2026.3.22 |
 | 0.1.x | < 2026.3.22 |

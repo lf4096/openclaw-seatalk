@@ -5,6 +5,9 @@
 	"contracts": {
 		"tools": ["seatalk"]
 	},
+	"doctorContract": {
+		"stateMigrations": []
+	},
 	"toolMetadata": {
 		"seatalk": {
 			"configSignals": [{ "rootPath": "channels", "required": ["seatalk"] }]
